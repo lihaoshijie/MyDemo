@@ -1,0 +1,12 @@
+spring:
+  application:
+    name: demo
+
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/demo_db?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+    username: root
+    password: 826350
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+mybatis:
+  mapper-locations: classpath:mapper/*.xml
