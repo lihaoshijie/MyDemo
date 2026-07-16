@@ -15,6 +15,13 @@ seniverse:
   api:
     key: ${SENIVERSE_API_KEY}
 
+llm:
+  api-key: ${A_BAILIAN_API_KEY}
+  model: qwen-plus
+  base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  max-history: 20
+  system-prompt: 你是一个微信助手，名叫 MyDemo Bot。你友好、简洁，能回答问题和闲聊。回复要简短，适合微信聊天。
+
 logging:
   level:
     com.Myself.demo: DEBUG

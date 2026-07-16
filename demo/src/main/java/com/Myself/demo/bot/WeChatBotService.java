@@ -87,7 +87,7 @@ public class WeChatBotService {
 
         log.info("收到微信消息 from={}, text={}", fromUserId, text);
 
-        String result = commandRouter.route(text);
+        String result = commandRouter.route(text, fromUserId);
         try {
             client.sendText(fromUserId, result);
             log.info("回复消息成功: {}", result);
