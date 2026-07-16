@@ -30,14 +30,11 @@ public class WeatherCommand implements Command {
 
         WeatherResponse weather = weatherService.getWeather(city);
 
-        return "========== 天气信息 ==========\n" +
-               "城市: " + weather.getCity() + "\n" +
-               "天气: " + weather.getWeather() + "\n" +
-               "温度: " + weather.getTemperature() + "\n" +
-               "湿度: " + weather.getHumidity() + "\n" +
-               "风向: " + weather.getWindDirection() + "\n" +
-               "风力: " + weather.getWindScale() + "\n" +
-               "观测时间: " + weather.getObservationTime() + "\n" +
-               "==============================";
+        return "【" + weather.getCity() + "天气】\n\n" +
+               "地区: " + weather.getProvince() + ", " + weather.getCountry() + "\n\n" +
+               "天气: " + weather.getWeather() + "\n\n" +
+               "温度: " + weather.getTemperature() + "\n\n" +
+               "湿度: " + weather.getHumidity() + "\n\n" +
+               "风向: " + weather.getWindDirection() + " " + weather.getWindScale();
     }
 }

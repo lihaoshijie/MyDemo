@@ -1,5 +1,6 @@
 package com.Myself.demo;
 
+import com.Myself.demo.bot.WeChatBotService;
 import com.Myself.demo.cli.CommandExecutor;
 import lombok.extern.slf4j.Slf4j;
 import org.mybatis.spring.annotation.MapperScan;
@@ -21,14 +22,17 @@ public class DemoApplication {
     static class AppRunner implements CommandLineRunner {
 
         private final CommandExecutor commandExecutor;
+        private final WeChatBotService weChatBotService;
 
-        AppRunner(CommandExecutor commandExecutor) {
+        AppRunner(CommandExecutor commandExecutor, WeChatBotService weChatBotService) {
             this.commandExecutor = commandExecutor;
+            this.weChatBotService = weChatBotService;
         }
 
         @Override
         public void run(String... args) {
-            log.info("应用启动完成，进入命令行模式");
+            log.info("应用启动完成，启动 CLI 和微信 Bot");
+            weChatBotService.start();
             commandExecutor.start();
         }
     }

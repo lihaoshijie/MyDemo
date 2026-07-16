@@ -78,12 +78,17 @@ public class WeatherService {
             JsonNode nowNode = weatherNode.path("now");
 
             WeatherResponse weather = new WeatherResponse();
-            weather.setCity(weatherNode.path("location").path("name").asText());
+            JsonNode locationNode = weatherNode.path("location");
+            weather.setCity(locationNode.path("name").asText());
+            String path = locationNode.path("path").asText();
+            String[] pathParts = path.split(",");
+            weather.setProvince(pathParts.length >= 3 ? pathParts[pathParts.length - 2].trim() : "");
+            weather.setCountry(pathParts[pathParts.length - 1].trim());
             weather.setWeather(nowNode.path("text").asText());
-            weather.setTemperature(nowNode.path("temperature") + "°C");
-            weather.setHumidity(nowNode.path("humidity") + "%");
-            weather.setWindDirection(nowNode.path("wind").path("direction").asText());
-            weather.setWindScale(nowNode.path("wind").path("scale") + "级");
+            weather.setTemperature(nowNode.path("temperature").asText() + "°C");
+            weather.setHumidity(nowNode.path("humidity").asText() + "%");
+            weather.setWindDirection(nowNode.path("wind_direction").asText());
+            weather.setWindScale(nowNode.path("wind_scale").asText() + "级");
             weather.setObservationTime(weatherNode.path("last_update").asText());
 
             log.info("天气查询成功: {} - {}", weather.getCity(), weather.getWeather());

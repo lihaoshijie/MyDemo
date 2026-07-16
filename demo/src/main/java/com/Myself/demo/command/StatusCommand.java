@@ -24,12 +24,10 @@ public class StatusCommand implements Command {
         long minutes = (uptime % (1000 * 60 * 60)) / (1000 * 60);
         long seconds = (uptime % (1000 * 60)) / 1000;
 
-        return "========== 程序状态 ==========\n" +
-               "状态: 运行中\n" +
-               "运行时间: " + hours + "h " + minutes + "m " + seconds + "s\n" +
-               "内存使用: " + usedMemory + "MB / " + totalMemory + "MB\n" +
-               "最大内存: " + maxMemory + "MB\n" +
-               "可用处理器: " + runtime.availableProcessors() + " 核\n" +
-               "==============================";
+        return "【程序状态】运行中\n\n" +
+               "运行时间: " + hours + "h " + minutes + "m " + seconds + "s\n\n" +
+               "内存: " + usedMemory + "MB / " + totalMemory + "MB\n\n" +
+               "最大内存: " + maxMemory + "MB\n\n" +
+               "处理器: " + runtime.availableProcessors() + "核";
     }
 }
