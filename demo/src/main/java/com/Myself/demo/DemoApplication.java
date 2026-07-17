@@ -27,6 +27,7 @@ public class DemoApplication {
         AppRunner(CommandExecutor commandExecutor, WeChatBotService weChatBotService) {
             this.commandExecutor = commandExecutor;
             this.weChatBotService = weChatBotService;
+            
         }
 
         @Override

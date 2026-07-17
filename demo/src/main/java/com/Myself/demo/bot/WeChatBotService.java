@@ -14,6 +14,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Slf4j
 @Service
@@ -26,6 +27,9 @@ public class WeChatBotService {
     private ImageService imageService;
 
     private ILinkClient client;
+    private final ConcurrentHashMap<String, byte[]> imageBuffer = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Long> imageBufferTime = new ConcurrentHashMap<>();
+    private static final long IMAGE_BUFFER_TTL = 5 * 60 * 1000; // 5分钟
 
     public void start() {
         ILinkConfig config = ILinkConfig.builder()
@@ -159,22 +163,45 @@ public class WeChatBotService {
         if (text == null || text.isEmpty()) return;
 
         log.info("收到微信消息 from={}, text={}", fromUserId, text);
+
+        byte[] bufferedImage = imageBuffer.get(fromUserId);
+        Long bufferTime = imageBufferTime.get(fromUserId);
+        if (bufferedImage != null && bufferTime != null
+                && System.currentTimeMillis() - bufferTime < IMAGE_BUFFER_TTL) {
+            imageBuffer.remove(fromUserId);
+            imageBufferTime.remove(fromUserId);
+            log.info("使用缓存图片识图, from={}", fromUserId);
+            String answer = imageService.recognizeImage(bufferedImage, text);
+            sendReply(fromUserId, answer);
+            return;
+        } else if (bufferedImage != null) {
+            imageBuffer.remove(fromUserId);
+            imageBufferTime.remove(fromUserId);
+            log.info("图片缓存已过期, from={}", fromUserId);
+        }
+
         String result = commandRouter.route(text, fromUserId);
         sendReply(fromUserId, result);
     }
 
     private void handleImageMessage(String fromUserId, MessageItem imageItem, String text) {
-        String question = text != null && !text.isEmpty() ? text : "请描述这张图片的内容";
-        log.info("收到图片消息 from={}, question={}", fromUserId, question);
+        log.info("收到图片消息 from={}, text={}", fromUserId, text);
 
         try {
             byte[] imageBytes = client.downloadImageFromMessageItem(imageItem);
-            String answer = imageService.recognizeImage(imageBytes, question);
-            sendReply(fromUserId, answer);
+
+            if (text != null && !text.isEmpty()) {
+                String answer = imageService.recognizeImage(imageBytes, text);
+                sendReply(fromUserId, answer);
+            } else {
+                imageBuffer.put(fromUserId, imageBytes);
+                imageBufferTime.put(fromUserId, System.currentTimeMillis());
+                sendReply(fromUserId, "已收到图片，请告诉我你想了解什么？");
+            }
         } catch (Exception e) {
             log.error("处理图片消息失败", e);
             try {
-                client.sendText(fromUserId, "抱歉，图片识别失败，请稍后再试");
+                client.sendText(fromUserId, "抱歉，图片接收失败，请稍后再试");
             } catch (Exception ex) {
                 log.error("发送错误回复失败", ex);
             }
