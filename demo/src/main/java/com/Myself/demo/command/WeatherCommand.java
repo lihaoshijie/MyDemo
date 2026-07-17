@@ -22,19 +22,35 @@ public class WeatherCommand implements Command {
     @Override
     public String execute(String[] args) {
         if (args.length == 0 || args[0].trim().isEmpty()) {
-            throw new MissingParameterException("缺少城市参数，用法: weather <城市名>");
+            throw new MissingParameterException("缺少城市参数，用法: weather <城市名> [天数]");
         }
 
         String city = args[0].trim();
-        log.info("查询城市天气: {}", city);
+        int days = 1;
+        if (args.length > 1) {
+            try {
+                days = Integer.parseInt(args[1].trim());
+            } catch (NumberFormatException e) {
+                days = 1;
+            }
+        }
 
-        WeatherResponse weather = weatherService.getWeather(city);
+        if (days <= 1) {
+            log.info("查询实时天气: {}", city);
+            WeatherResponse w = weatherService.getWeather(city);
+            return formatNow(w);
+        }
 
-        return "【" + weather.getCity() + "天气】\n\n" +
-               "地区: " + weather.getProvince() + ", " + weather.getCountry() + "\n\n" +
-               "天气: " + weather.getWeather() + "\n\n" +
-               "温度: " + weather.getTemperature() + "\n\n" +
-               "湿度: " + weather.getHumidity() + "\n\n" +
-               "风向: " + weather.getWindDirection() + " " + weather.getWindScale();
+        int apiDays = days <= 3 ? 3 : days <= 7 ? 7 : 15;
+        log.info("查询预报天气: {} 天数={}", city, apiDays);
+        return weatherService.getForecastMulti(city, apiDays, days);
+    }
+
+    private String formatNow(WeatherResponse w) {
+        return "【" + w.getCity() + "天气】\n\n" +
+               "天气: " + w.getWeather() + "\n\n" +
+               "温度: " + w.getTemperature() + "\n\n" +
+               "湿度: " + w.getHumidity() + "\n\n" +
+               "风向: " + w.getWindDirection() + " " + w.getWindScale();
     }
 }

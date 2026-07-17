@@ -1,15 +1,25 @@
 package com.Myself.demo.service;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.alibaba.dashscope.aigc.generation.Generation;
+import com.alibaba.dashscope.aigc.generation.GenerationOutput.Choice;
+import com.alibaba.dashscope.aigc.generation.GenerationParam;
+import com.alibaba.dashscope.aigc.generation.GenerationResult;
+import com.alibaba.dashscope.common.Message;
+import com.alibaba.dashscope.common.Role;
+import com.alibaba.dashscope.exception.ApiException;
+import com.alibaba.dashscope.exception.InputRequiredException;
+import com.alibaba.dashscope.exception.NoApiKeyException;
+import com.alibaba.dashscope.tools.ToolBase;
+import com.alibaba.dashscope.tools.ToolCallBase;
+import com.alibaba.dashscope.tools.ToolCallFunction;
+import com.alibaba.dashscope.tools.ToolFunction;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.function.client.WebClient;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -17,154 +27,92 @@ import java.util.Map;
 @Service
 public class LlmService {
 
-    private final WebClient webClient;
     private final String apiKey;
     private final String model;
     private final String systemPrompt;
-    private final ObjectMapper objectMapper;
+    private final Generation generation;
 
     public LlmService(
             @Value("${llm.api-key}") String apiKey,
             @Value("${llm.model}") String model,
-            @Value("${llm.base-url}") String baseUrl,
             @Value("${llm.system-prompt}") String systemPrompt) {
         this.apiKey = apiKey;
         this.model = model;
         this.systemPrompt = systemPrompt;
-        this.objectMapper = new ObjectMapper();
-        this.webClient = WebClient.builder()
-                .baseUrl(baseUrl)
-                .defaultHeader("Authorization", "Bearer " + apiKey)
-                .defaultHeader("Content-Type", "application/json")
-                .build();
+        this.generation = new Generation();
         log.info("LlmService 初始化完成, model: {}", model);
     }
 
-    public LlmResult chat(String userMessage, List<Map<String, Object>> tools) {
+    public LlmResult chat(String userMessage, List<? extends ToolBase> tools, List<Map<String, String>> history) {
         try {
-            ObjectNode requestBody = objectMapper.createObjectNode();
-            requestBody.put("model", model);
-
-            ArrayNode messagesNode = requestBody.putArray("messages");
-
-            ObjectNode systemMsg = objectMapper.createObjectNode();
-            systemMsg.put("role", "system");
-            systemMsg.put("content", systemPrompt);
-            messagesNode.add(systemMsg);
-
-            ObjectNode userMsg = objectMapper.createObjectNode();
-            userMsg.put("role", "user");
-            userMsg.put("content", userMessage);
-            messagesNode.add(userMsg);
-
-            if (tools != null && !tools.isEmpty()) {
-                ArrayNode toolsNode = objectMapper.valueToTree(tools);
-                requestBody.set("tools", toolsNode);
-            }
-
-            String requestJson = objectMapper.writeValueAsString(requestBody);
-            log.debug("LLM 请求: {}", requestJson);
-
-            String response = webClient.post()
-                    .uri("/chat/completions")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .bodyValue(requestJson)
-                    .retrieve()
-                    .bodyToMono(String.class)
-                    .block();
-
-            log.debug("LLM 响应: {}", response);
-            return parseResponse(response);
-
-        } catch (Exception e) {
-            log.error("LLM 调用异常", e);
-            return LlmResult.text("AI 服务暂时不可用，请稍后再试");
-        }
-    }
-
-    public LlmResult chat(String userMessage, List<Map<String, Object>> tools, List<Map<String, String>> history) {
-        try {
-            ObjectNode requestBody = objectMapper.createObjectNode();
-            requestBody.put("model", model);
-
-            ArrayNode messagesNode = requestBody.putArray("messages");
-
-            ObjectNode systemMsg = objectMapper.createObjectNode();
-            systemMsg.put("role", "system");
-            systemMsg.put("content", systemPrompt);
-            messagesNode.add(systemMsg);
-
+            List<Message> messages = new ArrayList<>();
+            messages.add(Message.builder()
+                    .role(Role.SYSTEM.getValue())
+                    .content(systemPrompt)
+                    .build());
             if (history != null) {
                 for (Map<String, String> msg : history) {
-                    ObjectNode msgNode = objectMapper.createObjectNode();
-                    msgNode.put("role", msg.get("role"));
-                    msgNode.put("content", msg.get("content"));
-                    messagesNode.add(msgNode);
+                    messages.add(Message.builder()
+                            .role(msg.get("role"))
+                            .content(msg.get("content"))
+                            .build());
                 }
             }
+            messages.add(Message.builder()
+                    .role(Role.USER.getValue())
+                    .content(userMessage)
+                    .build());
 
-            ObjectNode userMsg = objectMapper.createObjectNode();
-            userMsg.put("role", "user");
-            userMsg.put("content", userMessage);
-            messagesNode.add(userMsg);
+            GenerationParam.GenerationParamBuilder<?, ?> builder = GenerationParam.builder()
+                    .apiKey(apiKey)
+                    .model(model)
+                    .messages(messages)
+                    .resultFormat("message");
 
             if (tools != null && !tools.isEmpty()) {
-                ArrayNode toolsNode = objectMapper.valueToTree(tools);
-                requestBody.set("tools", toolsNode);
+                builder.tools(new ArrayList<>(tools));
             }
 
-            String requestJson = objectMapper.writeValueAsString(requestBody);
-            log.debug("LLM 请求(with tools+history): {}", requestJson);
+            GenerationResult result = generation.call(builder.build());
+            return parseResult(result);
 
-            String response = webClient.post()
-                    .uri("/chat/completions")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .bodyValue(requestJson)
-                    .retrieve()
-                    .bodyToMono(String.class)
-                    .block();
-
-            log.debug("LLM 响应: {}", response);
-            return parseResponse(response);
-
-        } catch (Exception e) {
+        } catch (ApiException | NoApiKeyException | InputRequiredException e) {
             log.error("LLM 调用异常", e);
             return LlmResult.text("AI 服务暂时不可用，请稍后再试");
         }
     }
 
-    private LlmResult parseResponse(String response) {
-        try {
-            JsonNode root = objectMapper.readTree(response);
-            JsonNode choices = root.path("choices");
-            if (!choices.isArray() || choices.isEmpty()) {
-                return LlmResult.text("无回复内容");
-            }
-
-            JsonNode message = choices.get(0).path("message");
-            String finishReason = choices.get(0).path("finish_reason").asText("");
-
-            if ("tool_calls".equals(finishReason)) {
-                JsonNode toolCalls = message.path("tool_calls");
-                if (toolCalls.isArray() && !toolCalls.isEmpty()) {
-                    JsonNode firstCall = toolCalls.get(0);
-                    String functionName = firstCall.path("function").path("name").asText();
-                    String functionArgs = firstCall.path("function").path("arguments").asText();
-                    log.info("LLM 选择调函数: {}({})", functionName, functionArgs);
-                    return LlmResult.functionCall(functionName, functionArgs);
-                }
-            }
-
-            return LlmResult.text(message.path("content").asText("无回复内容"));
-
-        } catch (Exception e) {
-            log.error("解析 LLM 响应失败", e);
+    private LlmResult parseResult(GenerationResult result) {
+        List<Choice> choices = result.getOutput().getChoices();
+        if (choices == null || choices.isEmpty()) {
             return LlmResult.text("无回复内容");
         }
+
+        Choice choice = choices.get(0);
+        Message msg = choice.getMessage();
+
+        if (msg.getToolCalls() != null && !msg.getToolCalls().isEmpty()) {
+            ToolCallBase toolCall = msg.getToolCalls().get(0);
+            if ("function".equals(toolCall.getType())) {
+                ToolCallFunction funcCall = (ToolCallFunction) toolCall;
+                String fnName = funcCall.getFunction().getName();
+                String fnArgs = funcCall.getFunction().getArguments();
+                log.info("Function calling: {}({})", fnName, fnArgs);
+                return LlmResult.functionCall(fnName, fnArgs);
+            }
+        }
+
+        return LlmResult.text(msg.getContent());
+    }
+
+    public static JsonObject buildWeatherParams() {
+        String schema = """
+                {"type":"object","properties":{"city":{"type":"string","description":"城市名称，如：北京、上海、杭州"},"days":{"type":"integer","description":"查询未来几天天气。1=今天实时天气，3=未来三天，7=未来七天，15=未来十五天。默认为1","enum":[1,3,7,15]}},"required":["city"]}""";
+        return JsonParser.parseString(schema).getAsJsonObject();
     }
 
     public static class LlmResult {
-        private final String type; // "text" or "function_call"
+        private final String type;
         private final String content;
         private final String functionName;
         private final String functionArgs;

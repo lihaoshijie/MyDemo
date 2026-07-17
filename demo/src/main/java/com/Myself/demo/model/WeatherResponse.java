@@ -9,6 +9,8 @@ public class WeatherResponse {
     private String country;
     private String weather;
     private String temperature;
+    private String high;
+    private String low;
     private String humidity;
     private String windDirection;
     private String windScale;
