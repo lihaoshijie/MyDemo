@@ -58,6 +58,13 @@ public class CommandRouter {
         if (result.isFunctionCall()) {
             String fnName = result.getFunctionName();
             String fnArgs = result.getFunctionArgs();
+
+            if ("generate_image".equals(fnName)) {
+                String prompt = extractPrompt(fnArgs);
+                log.info("生成图片: {}", prompt);
+                return "IMG_GEN:" + prompt;
+            }
+
             Command fnCmd = commands.get(fnName);
 
             if (fnCmd != null) {
@@ -96,6 +103,16 @@ public class CommandRouter {
         }
     }
 
+    private String extractPrompt(String fnArgs) {
+        try {
+            com.fasterxml.jackson.databind.JsonNode argsNode = objectMapper.readTree(fnArgs);
+            return argsNode.has("prompt") ? argsNode.get("prompt").asText() : "";
+        } catch (Exception e) {
+            log.warn("解析prompt参数失败: {}", fnArgs, e);
+            return "";
+        }
+    }
+
     private List<ToolFunction> buildTools() {
         List<ToolFunction> tools = new ArrayList<>();
 
@@ -125,6 +142,14 @@ public class CommandRouter {
                 .function(FunctionDefinition.builder()
                         .name("version")
                         .description("查看项目版本号、Spring Boot版本、Java版本等技术信息")
+                        .build())
+                .build());
+
+        tools.add(ToolFunction.builder()
+                .function(FunctionDefinition.builder()
+                        .name("generate_image")
+                        .description("根据文字描述生成图片。当用户说画、生成、制作、创建图片时使用。")
+                        .parameters(LlmService.buildImageGenParams())
                         .build())
                 .build());
 

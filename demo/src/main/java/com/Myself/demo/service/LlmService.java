@@ -111,6 +111,12 @@ public class LlmService {
         return JsonParser.parseString(schema).getAsJsonObject();
     }
 
+    public static JsonObject buildImageGenParams() {
+        String schema = """
+                {"type":"object","properties":{"prompt":{"type":"string","description":"图片生成的提示词，描述想要生成的图片内容，如：一只可爱的猫"}},"required":["prompt"]}""";
+        return JsonParser.parseString(schema).getAsJsonObject();
+    }
+
     public static class LlmResult {
         private final String type;
         private final String content;

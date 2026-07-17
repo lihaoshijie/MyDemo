@@ -47,10 +47,14 @@ public class WeatherCommand implements Command {
     }
 
     private String formatNow(WeatherResponse w) {
-        return "【" + w.getCity() + "天气】\n\n" +
-               "天气: " + w.getWeather() + "\n\n" +
-               "温度: " + w.getTemperature() + "\n\n" +
-               "湿度: " + w.getHumidity() + "\n\n" +
-               "风向: " + w.getWindDirection() + " " + w.getWindScale();
+        return "🌤 " + w.getCity() + " 实时天气\n" +
+               "——————————————————\n\n" +
+               "天气: " + w.getWeather() + "    温度: " + w.getTemperature() + "\n" +
+               "体感: " + w.getFeelsLike() + "    湿度: " + w.getHumidity() + "\n" +
+               "风向: " + w.getWindDirection() + "    风速: " + w.getWindSpeed() + "\n" +
+               "风力: " + w.getWindScale() + "    能见度: " + w.getVisibility() + "\n" +
+               "气压: " + w.getPressure() + "\n" +
+               "——————————————————\n\n" +
+               "🕐 " + w.getObservationTime();
     }
 }

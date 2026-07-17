@@ -194,9 +194,13 @@ public class WeatherService {
             weather.setCountry(pathParts[pathParts.length - 1].trim());
             weather.setWeather(nowNode.path("text").asText());
             weather.setTemperature(nowNode.path("temperature").asText() + "°C");
+            weather.setFeelsLike(nowNode.path("feels_like").asText() + "°C");
             weather.setHumidity(nowNode.path("humidity").asText() + "%");
             weather.setWindDirection(nowNode.path("wind_direction").asText());
+            weather.setWindSpeed(nowNode.path("wind_speed").asText() + "km/h");
             weather.setWindScale(nowNode.path("wind_scale").asText() + "级");
+            weather.setVisibility(nowNode.path("visibility").asText() + "km");
+            weather.setPressure(nowNode.path("pressure").asText() + "hPa");
             weather.setObservationTime(weatherNode.path("last_update").asText());
 
             log.info("实时天气查询成功: {}", weather.getCity());
