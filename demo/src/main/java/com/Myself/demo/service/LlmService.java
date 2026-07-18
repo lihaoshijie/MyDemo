@@ -43,6 +43,46 @@ public class LlmService {
         log.info("LlmService 初始化完成, model: {}", model);
     }
 
+    public String chat(String userId, List<Map<String, String>> history) {
+        try {
+            List<Message> messages = new ArrayList<>();
+            messages.add(Message.builder()
+                    .role(Role.SYSTEM.getValue())
+                    .content(systemPrompt)
+                    .build());
+            if (history != null) {
+                for (Map<String, String> msg : history) {
+                    messages.add(Message.builder()
+                            .role(msg.get("role"))
+                            .content(msg.get("content"))
+                            .build());
+                }
+            }
+
+            GenerationParam param = GenerationParam.builder()
+                    .apiKey(apiKey)
+                    .model(model)
+                    .messages(messages)
+                    .resultFormat("message")
+                    .build();
+
+            GenerationResult result = generation.call(param);
+            return extractTextFromResult(result);
+
+        } catch (Exception e) {
+            log.error("LLM 对话调用异常", e);
+            return "AI 服务暂时不可用，请稍后再试";
+        }
+    }
+
+    private String extractTextFromResult(GenerationResult result) {
+        List<Choice> choices = result.getOutput().getChoices();
+        if (choices == null || choices.isEmpty()) {
+            return "无回复内容";
+        }
+        return choices.get(0).getMessage().getContent();
+    }
+
     public LlmResult chat(String userMessage, List<? extends ToolBase> tools, List<Map<String, String>> history) {
         try {
             List<Message> messages = new ArrayList<>();
