@@ -168,61 +168,58 @@ public class WeChatBotService {
 
         log.info("收到微信消息 from={}, text={}", fromUserId, text);
 
+        String firstWord = text.trim().split("\\s+")[0].toLowerCase();
+        if (commandRouter.hasCommand(firstWord)) {
+            clearImageBuffer(fromUserId);
+            String result = commandRouter.route(text, fromUserId);
+            sendReply(fromUserId, result);
+            return;
+        }
+
         byte[] bufferedImage = imageBuffer.get(fromUserId);
         Long bufferTime = imageBufferTime.get(fromUserId);
 
-        if (bufferedImage == null || bufferTime == null
-                || System.currentTimeMillis() - bufferTime >= IMAGE_BUFFER_TTL) {
-            if (bufferedImage != null) {
-                imageBuffer.remove(fromUserId);
-                imageBufferTime.remove(fromUserId);
-                imageDesc.remove(fromUserId);
+        if (bufferedImage != null && bufferTime != null
+                && System.currentTimeMillis() - bufferTime < IMAGE_BUFFER_TTL) {
+
+            imageBufferTime.put(fromUserId, System.currentTimeMillis());
+
+            if (isRefreshRequest(text)) {
+                log.info("重新识别图片, from={}", fromUserId);
+                String lastQuestion = chatService.getLastUserQuestion(fromUserId);
+                String reExamPrompt = buildReExamPrompt(text, lastQuestion);
+                String answer = imageService.recognizeImage(bufferedImage, reExamPrompt);
+                imageDesc.put(fromUserId, answer);
+                chatService.addHistory(fromUserId, "[重新识别图片]", answer);
+                sendReply(fromUserId, answer);
+                return;
             }
-            return;
-        }
 
-        imageBufferTime.put(fromUserId, System.currentTimeMillis());
-
-        if (isRefreshRequest(text)) {
-            log.info("重新识别图片, from={}", fromUserId);
-            String lastQuestion = chatService.getLastUserQuestion(fromUserId);
-            String reExamPrompt = buildReExamPrompt(text, lastQuestion);
-            String answer = imageService.recognizeImage(bufferedImage, reExamPrompt);
-            imageDesc.put(fromUserId, answer);
-            chatService.addHistory(fromUserId, "[重新识别图片]", answer);
-            sendReply(fromUserId, answer);
-            return;
-        }
-
-            if (isImageQuestion(text)) {
-                String desc = imageDesc.get(fromUserId);
-                if (desc != null) {
-                    if (isImageGenRequest(text)) {
-                        log.info("图片上下文中请求生图, from={}", fromUserId);
-                        String genPrompt = chatService.chat(fromUserId,
-                                "用户发送了一张图片，图片内容摘要：" + desc
-                                + "\n\n用户要求：" + text
-                                + "\n\n请根据用户要求，从图片内容中提取关键信息，生成一段简短的图片生成提示词（英文或中文均可，100字以内）。只输出提示词，不要其他内容。");
-                        sendReply(fromUserId, "IMG_GEN:" + genPrompt);
-                        return;
-                    }
-                    log.info("基于图片描述回答问题, from={}", fromUserId);
-                    String context = "用户之前发送了一张图片，图片内容如下：" + desc
-                            + "\n\n用户现在问：" + text;
-                    String answer = chatService.chat(fromUserId, context);
-                    chatService.addHistory(fromUserId, text, answer);
-                    sendReply(fromUserId, answer);
-                    return;
+            String desc = imageDesc.get(fromUserId);
+            if (desc != null) {
+                String modifiedText = "用户发送了一张图片，图片内容如下：" + desc
+                        + "\n\n用户现在说：" + text;
+                log.info("图片上下文拼接, from={}", fromUserId);
+                String result = commandRouter.route(modifiedText, fromUserId);
+                if (result != null && !result.isEmpty()) {
+                    chatService.addHistory(fromUserId, text, result);
                 }
+                sendReply(fromUserId, result);
+                return;
             }
+        }
 
-        imageBuffer.remove(fromUserId);
-        imageBufferTime.remove(fromUserId);
-        imageDesc.remove(fromUserId);
-        log.info("用户转向其他话题，清除图片缓存, from={}", fromUserId);
-
+        clearImageBuffer(fromUserId);
         String result = commandRouter.route(text, fromUserId);
         sendReply(fromUserId, result);
+    }
+
+    private void clearImageBuffer(String userId) {
+        if (imageBuffer.remove(userId) != null) {
+            imageBufferTime.remove(userId);
+            imageDesc.remove(userId);
+            log.info("清除图片缓存, userId={}", userId);
+        }
     }
 
     private void handleImageMessage(String fromUserId, MessageItem imageItem, String text) {
@@ -232,19 +229,12 @@ public class WeChatBotService {
             byte[] imageBytes = client.downloadImageFromMessageItem(imageItem);
 
             if (text != null && !text.isEmpty()) {
-                if (isImageGenRequest(text)) {
-                    imageBuffer.put(fromUserId, imageBytes);
-                    imageDesc.put(fromUserId, text);
-                    log.info("图片+生图请求, from={}, text={}", fromUserId, text);
-                    sendReply(fromUserId, "IMG_GEN:" + text);
-                } else {
-                    String answer = imageService.recognizeImage(imageBytes, text);
-                    imageBuffer.put(fromUserId, imageBytes);
-                    imageBufferTime.put(fromUserId, System.currentTimeMillis());
-                    imageDesc.put(fromUserId, answer);
-                    chatService.addHistory(fromUserId, "[图片] " + text, answer);
-                    sendReply(fromUserId, answer);
-                }
+                String answer = imageService.recognizeImage(imageBytes, text);
+                imageBuffer.put(fromUserId, imageBytes);
+                imageBufferTime.put(fromUserId, System.currentTimeMillis());
+                imageDesc.put(fromUserId, answer);
+                chatService.addHistory(fromUserId, "[图片] " + text, answer);
+                sendReply(fromUserId, answer);
             } else {
                 String fullDesc = imageService.recognizeImage(imageBytes,
                         "请详细描述这张图片的内容，包括所有可见的文字、数字、符号、布局等细节");
@@ -270,7 +260,14 @@ public class WeChatBotService {
     }
 
     private void sendReply(String fromUserId, String result) {
-        if (result == null) return;
+        if (result == null || result.isEmpty()) {
+            try {
+                client.sendText(fromUserId, "抱歉，我没理解你的意思，可以再说详细一点吗？");
+            } catch (Exception e) {
+                log.error("发送澄清回复失败", e);
+            }
+            return;
+        }
 
         try {
             if (result.startsWith("IMG_GEN:")) {
@@ -361,31 +358,6 @@ public class WeChatBotService {
         }
 
         return "请仔细重新观察这张图片的细节，给出更准确的描述。";
-    }
-
-    private boolean isImageGenRequest(String text) {
-        if (text == null) return false;
-        String lower = text.toLowerCase();
-        String[] singleKeywords = {"画", "画个", "画一下", "画出", "出图", "生图"};
-        for (String kw : singleKeywords) {
-            if (lower.contains(kw)) return true;
-        }
-        boolean hasGen = lower.contains("生成") || lower.contains("制作") || lower.contains("创建");
-        boolean hasPic = lower.contains("图") || lower.contains("图片") || lower.contains("图像");
-        return hasGen && hasPic;
-    }
-
-    private boolean isImageQuestion(String text) {
-        if (text == null || text.isEmpty()) return false;
-        String lower = text.toLowerCase();
-        String[] keywords = {"图", "这", "那", "它", "什么", "颜色", "多少", "几", "有", "是",
-                "描述", "看看", "识别", "文案", "写", "解释", "意思", "含义", "配速", "跑步",
-                "健身", "运动", "机器", "设备", "屏幕", "显示", "读", "拍", "照片", "画",
-                "logo", "设计", "风格", "像", "觉得", "认为", "怎么", "如何", "为什么"};
-        for (String kw : keywords) {
-            if (lower.contains(kw)) return true;
-        }
-        return text.length() < 15;
     }
 
     @PreDestroy

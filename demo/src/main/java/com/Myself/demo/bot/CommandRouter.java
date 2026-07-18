@@ -36,6 +36,10 @@ public class CommandRouter {
         this.tools = buildTools();
     }
 
+    public boolean hasCommand(String name) {
+        return commands.containsKey(name.toLowerCase());
+    }
+
     public String route(String input, String userId) {
         if (input == null || input.trim().isEmpty()) {
             return "请输入命令";
