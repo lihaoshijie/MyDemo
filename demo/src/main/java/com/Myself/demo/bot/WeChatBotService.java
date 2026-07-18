@@ -1,6 +1,7 @@
 package com.Myself.demo.bot;
 
 import com.Myself.demo.service.ImageService;
+import com.Myself.demo.service.VoiceService;
 import com.github.wechat.ilink.sdk.ILinkClient;
 import com.github.wechat.ilink.sdk.core.config.ILinkConfig;
 import com.github.wechat.ilink.sdk.core.listener.OnLoginListener;
@@ -13,6 +14,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -29,11 +31,27 @@ public class WeChatBotService {
     @Autowired
     private com.Myself.demo.service.ChatService chatService;
 
+    @Autowired
+    private VoiceService voiceService;
+
     private ILinkClient client;
-    private final ConcurrentHashMap<String, byte[]> imageBuffer = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Long> imageBufferTime = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, String> imageDesc = new ConcurrentHashMap<>();
-    private static final long IMAGE_BUFFER_TTL = 5 * 60 * 1000; // 5分钟
+    private static final long IMAGE_BUFFER_TTL = 5 * 60 * 1000;
+    private static final int MAX_IMAGES = 5;
+
+    private final ConcurrentHashMap<String, List<ImageEntry>> imageBuffers = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Boolean> voiceMode = new ConcurrentHashMap<>();
+
+    private static class ImageEntry {
+        byte[] bytes;
+        String desc;
+        long timestamp;
+
+        ImageEntry(byte[] bytes, String desc) {
+            this.bytes = bytes;
+            this.desc = desc;
+            this.timestamp = System.currentTimeMillis();
+        }
+    }
 
     public void start() {
         ILinkConfig config = ILinkConfig.builder()
@@ -157,6 +175,12 @@ public class WeChatBotService {
 
         String fromUserId = msg.getFrom_user_id();
 
+        MessageItem voiceItem = extractVoice(msg);
+        if (voiceItem != null) {
+            handleVoiceMessage(fromUserId, voiceItem);
+            return;
+        }
+
         MessageItem imageItem = extractImage(msg);
         if (imageItem != null) {
             handleImageMessage(fromUserId, imageItem, extractText(msg));
@@ -168,6 +192,17 @@ public class WeChatBotService {
 
         log.info("收到微信消息 from={}, text={}", fromUserId, text);
 
+        if ("开启语音".equals(text) || "打开语音".equals(text) || "语音模式".equals(text)) {
+            voiceMode.put(fromUserId, true);
+            sendReply(fromUserId, "语音模式已开启，我的回复会附带语音播报");
+            return;
+        }
+        if ("关闭语音".equals(text) || "关掉语音".equals(text) || "结束语音".equals(text)) {
+            voiceMode.remove(fromUserId);
+            sendReply(fromUserId, "语音模式已关闭");
+            return;
+        }
+
         String firstWord = text.trim().split("\\s+")[0].toLowerCase();
         if (commandRouter.hasCommand(firstWord)) {
             clearImageBuffer(fromUserId);
@@ -176,49 +211,68 @@ public class WeChatBotService {
             return;
         }
 
-        byte[] bufferedImage = imageBuffer.get(fromUserId);
-        Long bufferTime = imageBufferTime.get(fromUserId);
+        List<ImageEntry> images = getValidImages(fromUserId);
 
-        if (bufferedImage != null && bufferTime != null
-                && System.currentTimeMillis() - bufferTime < IMAGE_BUFFER_TTL) {
-
-            imageBufferTime.put(fromUserId, System.currentTimeMillis());
-
+        if (!images.isEmpty()) {
             if (isRefreshRequest(text)) {
                 log.info("重新识别图片, from={}", fromUserId);
                 String lastQuestion = chatService.getLastUserQuestion(fromUserId);
                 String reExamPrompt = buildReExamPrompt(text, lastQuestion);
-                String answer = imageService.recognizeImage(bufferedImage, reExamPrompt);
-                imageDesc.put(fromUserId, answer);
+                ImageEntry latest = images.get(images.size() - 1);
+                String answer = imageService.recognizeImage(latest.bytes, reExamPrompt);
+                latest.desc = answer;
                 chatService.addHistory(fromUserId, "[重新识别图片]", answer);
                 sendReply(fromUserId, answer);
                 return;
             }
 
-            String desc = imageDesc.get(fromUserId);
-            if (desc != null) {
-                String modifiedText = "用户发送了一张图片，图片内容如下：" + desc
-                        + "\n\n用户现在说：" + text;
-                log.info("图片上下文拼接, from={}", fromUserId);
-                String result = commandRouter.route(modifiedText, fromUserId);
-                if (result != null && !result.isEmpty()) {
-                    chatService.addHistory(fromUserId, text, result);
-                }
-                sendReply(fromUserId, result);
-                return;
+            String context = buildImageContext(images, text);
+            log.info("图片上下文拼接, from={}, 图片数={}", fromUserId, images.size());
+            String result = commandRouter.route(context, fromUserId);
+            if (result != null && !result.isEmpty()) {
+                chatService.addHistory(fromUserId, text, result);
             }
+            sendReply(fromUserId, result, images);
+            return;
         }
 
-        clearImageBuffer(fromUserId);
         String result = commandRouter.route(text, fromUserId);
         sendReply(fromUserId, result);
     }
 
+    private List<ImageEntry> getValidImages(String userId) {
+        List<ImageEntry> images = imageBuffers.get(userId);
+        if (images == null || images.isEmpty()) return List.of();
+
+        long now = System.currentTimeMillis();
+        images.removeIf(e -> now - e.timestamp >= IMAGE_BUFFER_TTL);
+
+        if (images.isEmpty()) {
+            imageBuffers.remove(userId);
+            log.info("图片缓存已过期, userId={}", userId);
+        }
+        return images;
+    }
+
+    private String buildImageContext(List<ImageEntry> images, String text) {
+        StringBuilder sb = new StringBuilder();
+        if (images.size() == 1) {
+            sb.append("用户发送了一张图片，图片内容如下：");
+            sb.append(images.get(0).desc);
+        } else {
+            sb.append("用户发送了").append(images.size()).append("张图片：\n");
+            for (int i = 0; i < images.size(); i++) {
+                sb.append("图片").append(i + 1).append("：").append(images.get(i).desc).append("\n");
+            }
+        }
+        sb.append("\n\n用户现在说：").append(text);
+        return sb.toString();
+    }
+
     private void clearImageBuffer(String userId) {
-        if (imageBuffer.remove(userId) != null) {
-            imageBufferTime.remove(userId);
-            imageDesc.remove(userId);
-            log.info("清除图片缓存, userId={}", userId);
+        List<ImageEntry> removed = imageBuffers.remove(userId);
+        if (removed != null && !removed.isEmpty()) {
+            log.info("清除图片缓存, userId={}, 图片数={}", userId, removed.size());
         }
     }
 
@@ -230,24 +284,25 @@ public class WeChatBotService {
 
             if (text != null && !text.isEmpty()) {
                 String answer = imageService.recognizeImage(imageBytes, text);
-                imageBuffer.put(fromUserId, imageBytes);
-                imageBufferTime.put(fromUserId, System.currentTimeMillis());
-                imageDesc.put(fromUserId, answer);
+                addImageToBuffer(fromUserId, imageBytes, answer);
                 chatService.addHistory(fromUserId, "[图片] " + text, answer);
                 sendReply(fromUserId, answer);
             } else {
                 String fullDesc = imageService.recognizeImage(imageBytes,
                         "请详细描述这张图片的内容，包括所有可见的文字、数字、符号、布局等细节");
-                imageBuffer.put(fromUserId, imageBytes);
-                imageBufferTime.put(fromUserId, System.currentTimeMillis());
-                imageDesc.put(fromUserId, fullDesc);
+                addImageToBuffer(fromUserId, imageBytes, fullDesc);
                 chatService.addHistory(fromUserId, "[用户发送了图片]", fullDesc);
 
-                String shortDesc = fullDesc.length() > 150
-                        ? fullDesc.substring(0, 150) + "..."
-                        : fullDesc;
-                sendReply(fromUserId, "【图片识别】\n\n" + shortDesc
-                        + "\n\n可以继续提问，或要求我生成图片");
+                List<ImageEntry> images = imageBuffers.get(fromUserId);
+                int count = images != null ? images.size() : 1;
+                String shortDesc = extractFirstSentence(fullDesc);
+                String msg = "【图片识别 " + count + "/" + MAX_IMAGES + "】\n\n" + shortDesc;
+                if (count < MAX_IMAGES) {
+                    msg += "\n\n可以继续发图片（最多" + MAX_IMAGES + "张），或发送文字提问";
+                } else {
+                    msg += "\n\n已达到最多" + MAX_IMAGES + "张图片，请发送文字提问或发送新图片替换";
+                }
+                sendReply(fromUserId, msg);
             }
         } catch (Exception e) {
             log.error("处理图片消息失败", e);
@@ -259,7 +314,20 @@ public class WeChatBotService {
         }
     }
 
+    private void addImageToBuffer(String userId, byte[] bytes, String desc) {
+        List<ImageEntry> images = imageBuffers.computeIfAbsent(userId, k -> new ArrayList<>());
+        if (images.size() >= MAX_IMAGES) {
+            images.remove(0);
+        }
+        images.add(new ImageEntry(bytes, desc));
+        log.info("添加图片到缓存, userId={}, 当前图片数={}", userId, images.size());
+    }
+
     private void sendReply(String fromUserId, String result) {
+        sendReply(fromUserId, result, null);
+    }
+
+    private void sendReply(String fromUserId, String result, List<ImageEntry> images) {
         if (result == null || result.isEmpty()) {
             try {
                 client.sendText(fromUserId, "抱歉，我没理解你的意思，可以再说详细一点吗？");
@@ -273,12 +341,37 @@ public class WeChatBotService {
             if (result.startsWith("IMG_GEN:")) {
                 String prompt = result.substring(8);
                 log.info("生成图片: {}", prompt);
-                byte[] imageBytes = imageService.generateImage(prompt);
-                client.sendImage(fromUserId, imageBytes, "image.png", prompt);
+                client.sendText(fromUserId, "正在生成中，请稍候...");
+                byte[] imageBytes;
+                if (images != null && !images.isEmpty()) {
+                    log.info("图生图模式（{}张图片）: {}", images.size(), prompt);
+                    List<byte[]> imgBytes = new ArrayList<>();
+                    for (ImageEntry e : images) {
+                        imgBytes.add(e.bytes);
+                    }
+                    imageBytes = imageService.transformImage(imgBytes, prompt);
+                } else {
+                    imageBytes = imageService.generateImage(prompt);
+                }
+                client.sendImage(fromUserId, imageBytes, "image.png", "");
                 log.info("图片发送成功");
             } else {
                 client.sendText(fromUserId, result);
                 log.info("回复消息成功: {}", result.substring(0, Math.min(50, result.length())));
+            }
+
+            if (Boolean.TRUE.equals(voiceMode.get(fromUserId)) && !result.startsWith("IMG_GEN:")) {
+                try {
+                    String cleanText = result.replaceAll("\\*\\*|__|```|\\[.*?\\]\\(.*?\\)", "")
+                            .replaceAll("[\n\r——]+", "，");
+                    byte[] voiceBytes = voiceService.textToSpeech(cleanText);
+                    if (voiceBytes != null) {
+                        client.sendVoice(fromUserId, voiceBytes, "voice.wav", 0, 24000);
+                        log.info("语音发送成功");
+                    }
+                } catch (Exception e) {
+                    log.warn("语音发送失败", e);
+                }
             }
         } catch (Exception e) {
             log.error("回复失败", e);
@@ -288,6 +381,31 @@ public class WeChatBotService {
                 log.error("发送错误回复失败", ex);
             }
         }
+    }
+
+    private void handleVoiceMessage(String fromUserId, MessageItem voiceItem) {
+        log.info("收到语音消息 from={}", fromUserId);
+        String transcript = voiceItem.getVoice_item().getText();
+        if (transcript == null || transcript.isEmpty()) {
+            transcript = "[语音消息，未能识别文字]";
+        }
+        log.info("语音转文字: {}", transcript);
+
+        String result = commandRouter.route(transcript, fromUserId);
+        if (result != null && !result.isEmpty()) {
+            chatService.addHistory(fromUserId, transcript, result);
+        }
+        sendReply(fromUserId, result);
+    }
+
+    private MessageItem extractVoice(WeixinMessage msg) {
+        if (msg.getItem_list() == null) return null;
+        for (MessageItem item : msg.getItem_list()) {
+            if (item.getVoice_item() != null) {
+                return item;
+            }
+        }
+        return null;
     }
 
     private MessageItem extractImage(WeixinMessage msg) {
@@ -319,6 +437,34 @@ public class WeChatBotService {
             if (lower.contains(kw)) return true;
         }
         return false;
+    }
+
+    private boolean isTransformRequest(String text) {
+        if (text == null) return false;
+        String lower = text.toLowerCase();
+        String[] keywords = {"变", "改成", "变成", "转成", "换", "调成", "调整",
+                "风格", "卡通", "动漫", "油画", "素描", "水彩", "手绘",
+                "滤镜", "复古", "黑白", "像素", "抽象", "写实",
+                "P图", "p图", "p掉", "P掉", "编辑", "修改", "美化",
+                "移除", "去掉", "删除", "抠掉", "擦除", "消除",
+                "换成", "替换", "加", "加上", "添加"};
+        for (String kw : keywords) {
+            if (lower.contains(kw)) return true;
+        }
+        return false;
+    }
+
+    private String extractFirstSentence(String text) {
+        if (text == null || text.isEmpty()) return "";
+        int period = text.indexOf("。");
+        if (period > 0 && period < 200) {
+            return text.substring(0, period + 1);
+        }
+        int newline = text.indexOf("\n");
+        if (newline > 0 && newline < 200) {
+            return text.substring(0, newline);
+        }
+        return text.length() > 200 ? text.substring(0, 200) + "..." : text;
     }
 
     private String buildReExamPrompt(String userText, String lastQuestion) {

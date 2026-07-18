@@ -20,6 +20,9 @@ import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -99,12 +102,62 @@ public class ImageService {
                 throw new RuntimeException("未能获取生成图片的URL");
             }
 
-            log.info("生图完成: prompt={}, url={}", prompt, imageUrl);
+            log.info("文生图完成: prompt={}, url={}", prompt, imageUrl);
             return downloadImage(imageUrl);
 
         } catch (Exception e) {
             log.error("生图失败", e);
             throw new RuntimeException("图片生成失败: " + e.getMessage(), e);
+        }
+    }
+
+    public byte[] transformImage(List<byte[]> images, String stylePrompt) {
+        try {
+            List<Path> tempPaths = new ArrayList<>();
+            List<Map<String, Object>> content = new ArrayList<>();
+
+            for (byte[] img : images) {
+                Path tmp = Files.createTempFile("transform_", ".png");
+                Files.write(tmp, img);
+                tempPaths.add(tmp);
+                content.add(Map.of("image", tmp.toAbsolutePath().toString()));
+            }
+            content.add(Map.of("text", stylePrompt));
+
+            ImageGeneration ig = new ImageGeneration();
+            ImageGenerationMessage msg = ImageGenerationMessage.builder()
+                    .role(Role.USER.getValue())
+                    .content(content)
+                    .build();
+
+            ImageGenerationParam param = ImageGenerationParam.builder()
+                    .apiKey(apiKey)
+                    .model("wan2.6-image")
+                    .n(1)
+                    .size("1024*1024")
+                    .messages(Collections.singletonList(msg))
+                    .build();
+
+            ImageGenerationResult result = ig.call(param);
+
+            for (Path p : tempPaths) {
+                Files.deleteIfExists(p);
+            }
+
+            String imageUrl = extractImageUrl(result);
+            if (imageUrl == null || imageUrl.isEmpty()) {
+                imageUrl = waitForAsyncResult(ig, result);
+            }
+            if (imageUrl == null || imageUrl.isEmpty()) {
+                throw new RuntimeException("未能获取生成图片的URL");
+            }
+
+            log.info("图生图完成: images={}, style={}", images.size(), stylePrompt);
+            return downloadImage(imageUrl);
+
+        } catch (Exception e) {
+            log.error("图生图失败", e);
+            throw new RuntimeException("图片变换失败: " + e.getMessage(), e);
         }
     }
 
