@@ -31,16 +31,25 @@ public class LlmService {
     private final String model;
     private final String systemPrompt;
     private final Generation generation;
+    private final MemoryService memoryService;
 
     public LlmService(
             @Value("${llm.api-key}") String apiKey,
             @Value("${llm.model}") String model,
-            @Value("${llm.system-prompt}") String systemPrompt) {
+            @Value("${llm.base-url}") String baseUrl,
+            @Value("${llm.system-prompt}") String systemPrompt,
+            MemoryService memoryService) {
         this.apiKey = apiKey;
         this.model = model;
         this.systemPrompt = systemPrompt;
+        this.memoryService = memoryService;
         this.generation = new Generation();
         log.info("LlmService 初始化完成, model: {}", model);
+    }
+
+    private String buildSystemPrompt(String userId) {
+        String facts = memoryService.getFormattedFacts(userId);
+        return facts.isEmpty() ? systemPrompt : systemPrompt + "\n\n用户信息：" + facts + "。";
     }
 
     public String chat(String userId, List<Map<String, String>> history) {
@@ -48,7 +57,7 @@ public class LlmService {
             List<Message> messages = new ArrayList<>();
             messages.add(Message.builder()
                     .role(Role.SYSTEM.getValue())
-                    .content(systemPrompt)
+                    .content(buildSystemPrompt(userId))
                     .build());
             if (history != null) {
                 for (Map<String, String> msg : history) {
@@ -83,12 +92,12 @@ public class LlmService {
         return choices.get(0).getMessage().getContent();
     }
 
-    public LlmResult chat(String userMessage, List<? extends ToolBase> tools, List<Map<String, String>> history) {
+    public LlmResult chat(String userMessage, List<? extends ToolBase> tools, List<Map<String, String>> history, String userId) {
         try {
             List<Message> messages = new ArrayList<>();
             messages.add(Message.builder()
                     .role(Role.SYSTEM.getValue())
-                    .content(systemPrompt)
+                    .content(buildSystemPrompt(userId))
                     .build());
             if (history != null) {
                 for (Map<String, String> msg : history) {
@@ -154,6 +163,12 @@ public class LlmService {
     public static JsonObject buildImageGenParams() {
         String schema = """
                 {"type":"object","properties":{"prompt":{"type":"string","description":"图片生成的提示词，描述想要生成的图片内容，如：一只可爱的猫"}},"required":["prompt"]}""";
+        return JsonParser.parseString(schema).getAsJsonObject();
+    }
+
+    public static JsonObject buildMemoryParams() {
+        String schema = """
+                {"type":"object","properties":{"key":{"type":"string","description":"信息类别，如：名字、生日、喜好、职业、性别、年龄、家乡等"},"value":{"type":"string","description":"具体信息内容，如：托尼、5月20号、篮球、程序员"}},"required":["key","value"]}""";
         return JsonParser.parseString(schema).getAsJsonObject();
     }
 

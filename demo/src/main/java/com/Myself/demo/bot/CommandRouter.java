@@ -5,6 +5,7 @@ import com.Myself.demo.exception.BusinessException;
 import com.Myself.demo.service.ChatService;
 import com.Myself.demo.service.LlmService;
 import com.Myself.demo.service.LlmService.LlmResult;
+import com.Myself.demo.service.MemoryService;
 import com.alibaba.dashscope.tools.FunctionDefinition;
 import com.alibaba.dashscope.tools.ToolFunction;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -24,14 +25,16 @@ public class CommandRouter {
     private final Map<String, Command> commands;
     private final ChatService chatService;
     private final LlmService llmService;
+    private final MemoryService memoryService;
     private final ObjectMapper objectMapper;
     private final List<ToolFunction> tools;
 
-    public CommandRouter(List<Command> commandList, ChatService chatService, LlmService llmService) {
+    public CommandRouter(List<Command> commandList, ChatService chatService, LlmService llmService, MemoryService memoryService) {
         this.commands = commandList.stream()
                 .collect(Collectors.toMap(Command::getName, Function.identity()));
         this.chatService = chatService;
         this.llmService = llmService;
+        this.memoryService = memoryService;
         this.objectMapper = new ObjectMapper();
         this.tools = buildTools();
     }
@@ -57,7 +60,7 @@ public class CommandRouter {
 
         log.info("未匹配直接命令，LLM function calling: {}", trimmed);
         List<Map<String, String>> history = chatService.getHistory(userId);
-        LlmResult result = llmService.chat(trimmed, tools, history);
+        LlmResult result = llmService.chat(trimmed, tools, history, userId);
 
         if (result.isFunctionCall()) {
             String fnName = result.getFunctionName();
@@ -67,6 +70,10 @@ public class CommandRouter {
                 String prompt = extractPrompt(fnArgs);
                 log.info("生成图片: {}", prompt);
                 return "IMG_GEN:" + prompt;
+            }
+
+            if ("remember_fact".equals(fnName)) {
+                return handleRememberFact(fnArgs, userId);
             }
 
             Command fnCmd = commands.get(fnName);
@@ -87,6 +94,23 @@ public class CommandRouter {
         }
 
         return "无法处理此消息";
+    }
+
+    private String handleRememberFact(String fnArgs, String userId) {
+        try {
+            com.fasterxml.jackson.databind.JsonNode argsNode = objectMapper.readTree(fnArgs);
+            String key = argsNode.has("key") ? argsNode.get("key").asText() : "";
+            String value = argsNode.has("value") ? argsNode.get("value").asText() : "";
+            if (!key.isEmpty() && !value.isEmpty()) {
+                memoryService.setFact(userId, key, value);
+                log.info("记住用户信息: {}={}", key, value);
+                return "好的，已记住你的" + key + "是" + value;
+            }
+            return "抱歉，我没记住";
+        } catch (Exception e) {
+            log.warn("解析记忆参数失败: {}", fnArgs, e);
+            return "抱歉，没记住";
+        }
     }
 
     private String[] extractArgs(String fnArgs) {
@@ -154,6 +178,14 @@ public class CommandRouter {
                         .name("generate_image")
                         .description("根据文字描述生成图片。当用户说画、生成、制作、创建图片时使用。")
                         .parameters(LlmService.buildImageGenParams())
+                        .build())
+                .build());
+
+        tools.add(ToolFunction.builder()
+                .function(FunctionDefinition.builder()
+                        .name("remember_fact")
+                        .description("记住用户的个人信息。当用户告诉你他的名字、生日、喜好、习惯等个人信息时，调用此工具保存。")
+                        .parameters(LlmService.buildMemoryParams())
                         .build())
                 .build());
 
