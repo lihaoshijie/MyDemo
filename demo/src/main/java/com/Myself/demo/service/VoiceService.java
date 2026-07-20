@@ -2,6 +2,7 @@ package com.Myself.demo.service;
 
 import com.alibaba.dashscope.audio.http_tts.HttpSpeechSynthesisParam;
 import com.alibaba.dashscope.audio.http_tts.HttpSpeechSynthesizer;
+import com.alibaba.dashscope.utils.Constants;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -12,10 +13,11 @@ import java.nio.ByteBuffer;
 @Service
 public class VoiceService {
 
-    private final String apiKey;
+    private static final int SAMPLE_RATE = 24000;
+    private static final int BITS_PER_SAMPLE = 16;
 
     public VoiceService(@Value("${llm.api-key}") String apiKey) {
-        this.apiKey = apiKey;
+        Constants.apiKey = apiKey;
         log.info("VoiceService 初始化完成");
     }
 
@@ -23,12 +25,11 @@ public class VoiceService {
         try {
             HttpSpeechSynthesizer synthesizer = new HttpSpeechSynthesizer();
             HttpSpeechSynthesisParam param = HttpSpeechSynthesisParam.builder()
-                    .apiKey(apiKey)
                     .model("cosyvoice-v3-flash")
                     .voice("longanyang")
                     .text(text)
                     .format("wav")
-                    .sampleRate(24000)
+                    .sampleRate(SAMPLE_RATE)
                     .build();
 
             ByteBuffer audioData = synthesizer.callAndReturnAudio(param);
@@ -46,4 +47,11 @@ public class VoiceService {
             return null;
         }
     }
+
+    public int calculatePlayTimeMs(byte[] audioBytes) {
+        if (audioBytes == null) return 0;
+        return audioBytes.length * 8 / (SAMPLE_RATE * BITS_PER_SAMPLE / 1000);
+    }
+
+    public int getSampleRate() { return SAMPLE_RATE; }
 }
