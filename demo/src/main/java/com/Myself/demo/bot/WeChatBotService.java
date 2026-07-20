@@ -338,13 +338,15 @@ public class WeChatBotService {
         }
 
         try {
-            if (result.startsWith("IMG_GEN:")) {
-                String prompt = result.substring(8);
-                log.info("生成图片: {}", prompt);
+            if (result.startsWith("IMG_GEN:") || result.startsWith("TRANSFORM_GEN:")) {
+                String prompt = result.startsWith("TRANSFORM_GEN:")
+                        ? result.substring(14)
+                        : result.substring(8);
+                boolean isTransform = result.startsWith("TRANSFORM_GEN:");
+                log.info("生成图片: mode={}, prompt={}", isTransform ? "图生图" : "文生图", prompt);
                 client.sendText(fromUserId, "正在生成中，请稍候...");
                 byte[] imageBytes;
-                if (images != null && !images.isEmpty()) {
-                    log.info("图生图模式（{}张图片）: {}", images.size(), prompt);
+                if (isTransform && images != null && !images.isEmpty()) {
                     List<byte[]> imgBytes = new ArrayList<>();
                     for (ImageEntry e : images) {
                         imgBytes.add(e.bytes);
@@ -360,7 +362,8 @@ public class WeChatBotService {
                 log.info("回复消息成功: {}", result.substring(0, Math.min(50, result.length())));
             }
 
-            if (Boolean.TRUE.equals(voiceMode.get(fromUserId)) && !result.startsWith("IMG_GEN:")) {
+            if (Boolean.TRUE.equals(voiceMode.get(fromUserId))
+                    && !result.startsWith("IMG_GEN:") && !result.startsWith("TRANSFORM_GEN:")) {
                 try {
                     byte[] voiceBytes = voiceService.textToSpeech(result);
                     if (voiceBytes != null) {

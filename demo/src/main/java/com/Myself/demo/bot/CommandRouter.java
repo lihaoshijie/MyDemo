@@ -68,8 +68,14 @@ public class CommandRouter {
 
             if ("generate_image".equals(fnName)) {
                 String prompt = extractPrompt(fnArgs);
-                log.info("生成图片: {}", prompt);
+                log.info("文生图: {}", prompt);
                 return "IMG_GEN:" + prompt;
+            }
+
+            if ("transform_image".equals(fnName)) {
+                String prompt = extractPrompt(fnArgs);
+                log.info("图生图: {}", prompt);
+                return "TRANSFORM_GEN:" + prompt;
             }
 
             if ("remember_fact".equals(fnName)) {
@@ -176,7 +182,15 @@ public class CommandRouter {
         tools.add(ToolFunction.builder()
                 .function(FunctionDefinition.builder()
                         .name("generate_image")
-                        .description("根据文字描述生成图片。当用户说画、生成、制作、创建图片时使用。")
+                        .description("从零生成一张全新的图片，完全不参考任何已有图片。仅在用户明确要画一张全新的、与现有图片无关的内容时使用。如果用户的请求涉及已有图片（如合并、结合、融合、修改、变换、P图），请使用 transform_image 而不是此工具。")
+                        .parameters(LlmService.buildImageGenParams())
+                        .build())
+                .build());
+
+        tools.add(ToolFunction.builder()
+                .function(FunctionDefinition.builder()
+                        .name("transform_image")
+                        .description("基于用户已发送的图片进行变换、编辑、合并或融合。只要用户的请求涉及对已有图片的操作（如结合、合并、融合、变风格、P掉、移除、替换、添加元素、把照片变成某种风格），都使用此工具。此工具会把原图传给AI作为参考。")
                         .parameters(LlmService.buildImageGenParams())
                         .build())
                 .build());

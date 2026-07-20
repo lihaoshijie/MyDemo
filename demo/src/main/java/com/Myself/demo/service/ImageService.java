@@ -107,6 +107,9 @@ public class ImageService {
 
         } catch (Exception e) {
             log.error("生图失败", e);
+            if (e.getMessage() != null && e.getMessage().contains("IPInfringement")) {
+                throw new RuntimeException("该内容涉及版权保护，无法生成。请尝试其他非版权相关的内容。");
+            }
             throw new RuntimeException("图片生成失败: " + e.getMessage(), e);
         }
     }
@@ -157,6 +160,9 @@ public class ImageService {
 
         } catch (Exception e) {
             log.error("图生图失败", e);
+            if (e.getMessage() != null && e.getMessage().contains("IPInfringement")) {
+                throw new RuntimeException("该内容涉及版权保护，无法生成。请尝试其他非版权相关的内容。");
+            }
             throw new RuntimeException("图片变换失败: " + e.getMessage(), e);
         }
     }
