@@ -365,13 +365,13 @@ public class WeChatBotService {
             if (Boolean.TRUE.equals(voiceMode.get(fromUserId))
                     && !result.startsWith("IMG_GEN:") && !result.startsWith("TRANSFORM_GEN:")) {
                 try {
-                    byte[] voiceBytes = voiceService.textToSpeech(result);
-                    if (voiceBytes != null) {
-                        client.sendFile(fromUserId, voiceBytes, "语音.wav", "");
-                        log.info("语音文件发送成功");
+                    byte[] mp3Bytes = voiceService.textToSpeechMp3(result);
+                    if (mp3Bytes != null) {
+                        client.sendFile(fromUserId, mp3Bytes, "语音.mp3", "");
+                        log.info("语音文件发送成功(MP3), size={}bytes", mp3Bytes.length);
                     }
                 } catch (Exception e) {
-                    log.warn("语音文件发送失败", e);
+                    log.warn("语音发送失败", e);
                 }
             }
         } catch (Exception e) {
