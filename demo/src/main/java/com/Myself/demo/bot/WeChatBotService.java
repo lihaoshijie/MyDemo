@@ -206,6 +206,16 @@ public class WeChatBotService {
             return;
         }
 
+        if ("音色列表".equals(text) || "有哪些音色".equals(text) || "音色".equals(text)) {
+            StringBuilder sb = new StringBuilder("🎙️ 可用音色：\n\n");
+            for (VoiceType vt : VoiceType.values()) {
+                sb.append(vt.getDescription()).append("\n");
+            }
+            sb.append("\n切换方式：切换 + 音色名，如「切换童声」");
+            sendReply(fromUserId, sb.toString());
+            return;
+        }
+
         String[] switchPrefixes = {"切换", "换成", "换", "用"};
         for (String p : switchPrefixes) {
             if (text.startsWith(p)) {

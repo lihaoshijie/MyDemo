@@ -22,8 +22,9 @@ public enum VoiceType {
 
     public static VoiceType fromName(String name) {
         if (name == null || name.trim().isEmpty()) return MALE;
+        String n = name.replace("女生", "女声").replace("男生", "男声");
         for (VoiceType vt : values()) {
-            if (vt.description.contains(name) || vt.name().equalsIgnoreCase(name)) {
+            if (vt.description.contains(n) || vt.name().equalsIgnoreCase(n)) {
                 return vt;
             }
         }
