@@ -2,6 +2,7 @@ package com.Myself.demo.bot;
 
 import com.Myself.demo.service.ImageService;
 import com.Myself.demo.service.VoiceService;
+import com.Myself.demo.service.VoiceType;
 import com.github.wechat.ilink.sdk.ILinkClient;
 import com.github.wechat.ilink.sdk.core.config.ILinkConfig;
 import com.github.wechat.ilink.sdk.core.listener.OnLoginListener;
@@ -40,6 +41,7 @@ public class WeChatBotService {
 
     private final ConcurrentHashMap<String, List<ImageEntry>> imageBuffers = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Boolean> voiceMode = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, String> voicePref = new ConcurrentHashMap<>();
 
     private static class ImageEntry {
         byte[] bytes;
@@ -199,8 +201,22 @@ public class WeChatBotService {
         }
         if ("关闭语音".equals(text) || "关掉语音".equals(text) || "结束语音".equals(text)) {
             voiceMode.remove(fromUserId);
+            voicePref.remove(fromUserId);
             sendReply(fromUserId, "语音模式已关闭");
             return;
+        }
+
+        String[] switchPrefixes = {"切换", "换成", "换", "用"};
+        for (String p : switchPrefixes) {
+            if (text.startsWith(p)) {
+                String name = text.substring(p.length()).trim();
+                if (!name.isEmpty()) {
+                    VoiceType vt = VoiceType.fromName(name);
+                    voicePref.put(fromUserId, vt.getCode());
+                    sendReply(fromUserId, "已切换音色为 " + vt.getDescription());
+                    return;
+                }
+            }
         }
 
         String firstWord = text.trim().split("\\s+")[0].toLowerCase();
@@ -365,7 +381,8 @@ public class WeChatBotService {
             if (Boolean.TRUE.equals(voiceMode.get(fromUserId))
                     && !result.startsWith("IMG_GEN:") && !result.startsWith("TRANSFORM_GEN:")) {
                 try {
-                    byte[] mp3Bytes = voiceService.textToSpeechMp3(result);
+                    String voiceCode = voicePref.get(fromUserId);
+                    byte[] mp3Bytes = voiceService.textToSpeechMp3(result, voiceCode);
                     if (mp3Bytes != null) {
                         client.sendFile(fromUserId, mp3Bytes, "语音.mp3", "");
                         log.info("语音文件发送成功(MP3), size={}bytes", mp3Bytes.length);
