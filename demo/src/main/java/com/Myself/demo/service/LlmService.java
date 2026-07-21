@@ -13,8 +13,9 @@ import com.alibaba.dashscope.tools.ToolBase;
 import com.alibaba.dashscope.tools.ToolCallBase;
 import com.alibaba.dashscope.tools.ToolCallFunction;
 import com.alibaba.dashscope.tools.ToolFunction;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
+import com.google.gson.JsonPrimitive;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -155,21 +156,63 @@ public class LlmService {
     }
 
     public static JsonObject buildWeatherParams() {
-        String schema = """
-                {"type":"object","properties":{"city":{"type":"string","description":"城市名称，如：北京、上海、杭州"},"days":{"type":"integer","description":"查询未来几天天气。1=今天实时天气，3=未来三天，7=未来七天，15=未来十五天。默认为1","enum":[1,3,7,15]}},"required":["city"]}""";
-        return JsonParser.parseString(schema).getAsJsonObject();
+        JsonObject p = new JsonObject();
+        p.addProperty("type", "object");
+        JsonObject props = new JsonObject();
+        JsonObject city = new JsonObject();
+        city.addProperty("type", "string");
+        city.addProperty("description", "城市名称，如：北京、上海、杭州");
+        props.add("city", city);
+        JsonObject days = new JsonObject();
+        days.addProperty("type", "integer");
+        days.addProperty("description", "查询未来几天。1=实时，3=三天，7=七天，15=十五天。默认1");
+        JsonArray enums = new JsonArray();
+        enums.add(new JsonPrimitive(1));
+        enums.add(new JsonPrimitive(3));
+        enums.add(new JsonPrimitive(7));
+        enums.add(new JsonPrimitive(15));
+        days.add("enum", enums);
+        props.add("days", days);
+        p.add("properties", props);
+        JsonArray req = new JsonArray();
+        req.add(new JsonPrimitive("city"));
+        p.add("required", req);
+        return p;
     }
 
     public static JsonObject buildImageGenParams() {
-        String schema = """
-                {"type":"object","properties":{"prompt":{"type":"string","description":"图片生成的提示词，描述想要生成的图片内容，如：一只可爱的猫"}},"required":["prompt"]}""";
-        return JsonParser.parseString(schema).getAsJsonObject();
+        JsonObject p = new JsonObject();
+        p.addProperty("type", "object");
+        JsonObject props = new JsonObject();
+        JsonObject prompt = new JsonObject();
+        prompt.addProperty("type", "string");
+        prompt.addProperty("description", "图片生成提示词，如：一只可爱的猫");
+        props.add("prompt", prompt);
+        p.add("properties", props);
+        JsonArray req = new JsonArray();
+        req.add(new JsonPrimitive("prompt"));
+        p.add("required", req);
+        return p;
     }
 
     public static JsonObject buildMemoryParams() {
-        String schema = """
-                {"type":"object","properties":{"key":{"type":"string","description":"信息类别，如：名字、生日、喜好、职业、性别、年龄、家乡等"},"value":{"type":"string","description":"具体信息内容，如：托尼、5月20号、篮球、程序员"}},"required":["key","value"]}""";
-        return JsonParser.parseString(schema).getAsJsonObject();
+        JsonObject p = new JsonObject();
+        p.addProperty("type", "object");
+        JsonObject props = new JsonObject();
+        JsonObject key = new JsonObject();
+        key.addProperty("type", "string");
+        key.addProperty("description", "信息类别，如：名字、生日、喜好、职业");
+        props.add("key", key);
+        JsonObject value = new JsonObject();
+        value.addProperty("type", "string");
+        value.addProperty("description", "具体信息，如：托尼、5月20号、篮球、程序员");
+        props.add("value", value);
+        p.add("properties", props);
+        JsonArray req = new JsonArray();
+        req.add(new JsonPrimitive("key"));
+        req.add(new JsonPrimitive("value"));
+        p.add("required", req);
+        return p;
     }
 
     public static class LlmResult {

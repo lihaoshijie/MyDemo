@@ -363,6 +363,19 @@ Office 文件 (.docx/.xlsx/.pdf) → 专用库提取
 
 ---
 
+## 工具类 (util)
+
+| 类 | 作用 | 使用场景 |
+|----|------|---------|
+| MarkdownUtil | Markdown → 纯文本，去格式符号 | TTS 播报前清洗 |
+| JsonUtil | Jackson 一行式序列化/反序列化 | MemoryService、SessionManager |
+| JsonSchemaBuilder | 流式构建 JSON Schema | LlmService.build*Params() |
+| ToolBuilder | 封装 JsonSchemaBuilder → FunctionDefinition | CommandRouter.buildTools() |
+| MediaExtractor | 统一提取 MessageItem | WeChatBotService.handleMessage() |
+| SvgUtil | SVG 校验/提取/转 PNG | 图表生成（预留） |
+
+---
+
 ## SDK 接口总结
 
 ### iLink SDK（微信接入）
