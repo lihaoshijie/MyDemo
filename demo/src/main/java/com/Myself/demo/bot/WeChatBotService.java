@@ -3,6 +3,12 @@ package com.Myself.demo.bot;
 import com.Myself.demo.service.ImageService;
 import com.Myself.demo.service.VoiceService;
 import com.Myself.demo.service.VoiceType;
+import com.alibaba.dashscope.utils.OSSUtils;
+import org.apache.poi.xwpf.extractor.XWPFWordExtractor;
+import org.apache.poi.xwpf.usermodel.XWPFDocument;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.text.PDFTextStripper;
 import com.github.wechat.ilink.sdk.ILinkClient;
 import com.github.wechat.ilink.sdk.core.config.ILinkConfig;
 import com.github.wechat.ilink.sdk.core.listener.OnLoginListener;
@@ -13,11 +19,14 @@ import com.github.wechat.ilink.sdk.core.model.WeixinMessage;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 @Slf4j
 @Service
@@ -34,6 +43,9 @@ public class WeChatBotService {
 
     @Autowired
     private VoiceService voiceService;
+
+    @Value("${llm.api-key}")
+    private String apiKey;
 
     private ILinkClient client;
     private static final long IMAGE_BUFFER_TTL = 5 * 60 * 1000;
@@ -180,6 +192,12 @@ public class WeChatBotService {
         MessageItem voiceItem = extractVoice(msg);
         if (voiceItem != null) {
             handleVoiceMessage(fromUserId, voiceItem);
+            return;
+        }
+
+        MessageItem fileItem = extractFile(msg);
+        if (fileItem != null) {
+            handleFileMessage(fromUserId, fileItem, extractText(msg));
             return;
         }
 
@@ -409,6 +427,155 @@ public class WeChatBotService {
                 log.error("发送错误回复失败", ex);
             }
         }
+    }
+
+    private void handleFileMessage(String fromUserId, MessageItem fileItem, String text) {
+        String fileName = fileItem.getFile_item() != null
+                ? fileItem.getFile_item().getFile_name() : "file";
+        log.info("收到文件消息 from={}, file={}", fromUserId, fileName);
+        try {
+            byte[] fileBytes = client.downloadFileFromMessageItem(fileItem);
+            String content = extractTextContent(fileBytes, fileName);
+
+            if (content == null || content.isEmpty()) {
+                Path tmp = Files.createTempFile("wxfile_", "_" + fileName);
+                Files.write(tmp, fileBytes);
+                String ossUrl = OSSUtils.upload("qwen-plus", tmp.toAbsolutePath().toString(), apiKey);
+                Files.deleteIfExists(tmp);
+                content = "文件链接: " + ossUrl;
+            }
+
+            String question = text != null && !text.isEmpty()
+                    ? "用户上传了一个文件(" + fileName + ")，文件内容如下：\n\n" + content
+                        + "\n\n用户说：" + text
+                    : "用户上传了一个文件(" + fileName + ")，文件内容如下：\n\n" + content
+                        + "\n\n请概括这个文件的内容";
+
+            String result = commandRouter.route(question, fromUserId);
+            sendReply(fromUserId, result);
+
+            boolean wantFile = text != null && (text.contains("总结") || text.contains("导出")
+                    || text.contains("写文件") || text.contains("生成文件"));
+            if (wantFile && result != null && !result.isEmpty()) {
+                String baseName = fileName.replaceAll("\\.[^.]+$", "");
+                client.sendFile(fromUserId, result.getBytes("UTF-8"), baseName + "_总结.txt", "");
+                log.info("总结文件已发送: {}", baseName);
+            }
+        } catch (Exception e) {
+            log.error("处理文件消息失败", e);
+            try { client.sendText(fromUserId, "抱歉，文件处理失败，请稍后再试"); }
+            catch (Exception ex) { log.error("发送错误回复失败", ex); }
+        }
+    }
+
+    private String extractTextContent(byte[] bytes, String fileName) {
+        String lower = fileName.toLowerCase();
+
+        boolean isOffice = lower.endsWith(".doc") || lower.endsWith(".docx")
+                || lower.endsWith(".xls") || lower.endsWith(".xlsx")
+                || lower.endsWith(".ppt") || lower.endsWith(".pptx");
+
+        if (!isOffice && isBinarySignature(bytes)) return null;
+
+        boolean isText = lower.endsWith(".txt") || lower.endsWith(".md") || lower.endsWith(".json")
+                || lower.endsWith(".csv") || lower.endsWith(".xml") || lower.endsWith(".html")
+                || lower.endsWith(".log") || lower.endsWith(".java") || lower.endsWith(".py")
+                || lower.endsWith(".yaml") || lower.endsWith(".yml") || lower.endsWith(".sql")
+                || lower.endsWith(".c") || lower.endsWith(".cpp") || lower.endsWith(".h")
+                || lower.endsWith(".js") || lower.endsWith(".ts") || lower.endsWith(".css")
+                || lower.endsWith(".sh") || lower.endsWith(".bat") || lower.endsWith(".ini")
+                || lower.endsWith(".cfg") || lower.endsWith(".conf");
+
+        if (isText) return tryDecodeText(bytes, 50000);
+        if (isOffice) return extractWithPoi(bytes, fileName);
+
+        return null;
+    }
+
+    private String extractWithPoi(byte[] bytes, String fileName) {
+        try {
+            String lower = fileName.toLowerCase();
+            if (lower.endsWith(".pdf")) {
+                var doc = Loader.loadPDF(bytes);
+                var stripper = new PDFTextStripper();
+                String text = stripper.getText(doc);
+                doc.close();
+                return text.length() > 50000 ? text.substring(0, 50000) + "\n...(内容过长已截断)" : text;
+            }
+            if (lower.endsWith(".docx")) {
+                XWPFDocument doc = new XWPFDocument(new java.io.ByteArrayInputStream(bytes));
+                XWPFWordExtractor ex = new XWPFWordExtractor(doc);
+                String text = ex.getText();
+                ex.close();
+                return text.length() > 50000 ? text.substring(0, 50000) + "\n...(内容过长已截断)" : text;
+            }
+            if (lower.endsWith(".xlsx")) {
+                XSSFWorkbook wb = new XSSFWorkbook(new java.io.ByteArrayInputStream(bytes));
+                StringBuilder sb = new StringBuilder();
+                for (int i = 0; i < wb.getNumberOfSheets(); i++) {
+                    sb.append("Sheet: ").append(wb.getSheetName(i)).append("\n");
+                    var sheet = wb.getSheetAt(i);
+                    for (int r = 0; r <= sheet.getLastRowNum(); r++) {
+                        var row = sheet.getRow(r);
+                        if (row != null) {
+                            for (var cell : row) {
+                                String v = cell.toString().trim();
+                                if (!v.isEmpty()) sb.append(v).append("\t");
+                            }
+                            sb.append("\n");
+                        }
+                    }
+                }
+                wb.close();
+                String text = sb.toString();
+                return text.length() > 50000 ? text.substring(0, 50000) + "\n...(内容过长已截断)" : text;
+            }
+        } catch (Exception e) {
+            log.warn("POI 提取失败, 回退文本尝试: {}", e.getMessage());
+        }
+        return tryDecodeText(bytes, 5000);
+    }
+
+    private String tryDecodeText(byte[] bytes, int maxLen) {
+        for (String charset : new String[]{"UTF-8", "GBK"}) {
+            try {
+                String s = new String(bytes, charset);
+                int len = Math.min(s.length(), 1000);
+                int valid = 0;
+                for (int i = 0; i < len; i++) {
+                    char c = s.charAt(i);
+                    if (c >= 0x4e00 && c <= 0x9fff) valid++;
+                    else if (c >= 'a' && c <= 'z') valid++;
+                    else if (c >= 'A' && c <= 'Z') valid++;
+                    else if (c >= '0' && c <= '9') valid++;
+                    else if (c == ' ' || c == '\n' || c == '\r' || c == '\t') valid++;
+                }
+                if (valid > len * 0.5) {
+                    return s.length() > maxLen ? s.substring(0, maxLen) + "\n...(内容过长已截断)" : s;
+                }
+            } catch (Exception ignored) {}
+        }
+        return null;
+    }
+
+    private boolean isBinarySignature(byte[] bytes) {
+        if (bytes == null || bytes.length < 4) return false;
+        int b0 = bytes[0] & 0xFF, b1 = bytes[1] & 0xFF, b2 = bytes[2] & 0xFF, b3 = bytes[3] & 0xFF;
+        return (b0 == 0x50 && b1 == 0x4B)  // PK (zip/docx/xlsx/pptx)
+            || (b0 == 0x25 && b1 == 0x50 && b2 == 0x44 && b3 == 0x46)  // %PDF
+            || (b0 == 0xD0 && b1 == 0xCF && b2 == 0x11 && b3 == 0xE0)  // .doc
+            || (b0 == 0x89 && b1 == 0x50 && b2 == 0x4E && b3 == 0x47)  // PNG
+            || (b0 == 0xFF && b1 == 0xD8)  // JPEG
+            || (b0 == 0x47 && b1 == 0x49 && b2 == 0x46)  // GIF
+            || (b0 == 0x1F && b1 == 0x8B);  // GZIP
+    }
+
+    private MessageItem extractFile(WeixinMessage msg) {
+        if (msg.getItem_list() == null) return null;
+        for (MessageItem item : msg.getItem_list()) {
+            if (item.getFile_item() != null) return item;
+        }
+        return null;
     }
 
     private void handleVoiceMessage(String fromUserId, MessageItem voiceItem) {
