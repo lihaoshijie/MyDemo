@@ -54,6 +54,7 @@ public class WeChatBotService {
     private final ConcurrentHashMap<String, List<ImageEntry>> imageBuffers = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Boolean> voiceMode = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, String> voicePref = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, String> lastFileResult = new ConcurrentHashMap<>();
 
     private static class ImageEntry {
         byte[] bytes;
@@ -232,6 +233,18 @@ public class WeChatBotService {
             sb.append("\n切换方式：切换 + 音色名，如「切换童声」");
             sendReply(fromUserId, sb.toString());
             return;
+        }
+
+        if ((text.contains("总结") || text.contains("导出") || text.contains("生成文件")
+                || text.contains("输出文件") || text.contains("保存"))
+                && !text.contains("这份文件") && !text.contains("这个文件")
+                && lastFileResult.get(fromUserId) != null) {
+            try {
+                client.sendFile(fromUserId,
+                        lastFileResult.get(fromUserId).getBytes("UTF-8"),
+                        "文件总结.txt", "");
+                log.info("从缓冲生成文件: {}", fromUserId);
+            } catch (Exception e) { log.warn("缓冲文件发送失败", e); }
         }
 
         String[] switchPrefixes = {"切换", "换成", "换", "用"};
@@ -453,9 +466,11 @@ public class WeChatBotService {
 
             String result = commandRouter.route(question, fromUserId);
             sendReply(fromUserId, result);
+            lastFileResult.put(fromUserId, result);
 
             boolean wantFile = text != null && (text.contains("总结") || text.contains("导出")
-                    || text.contains("写文件") || text.contains("生成文件"));
+                    || text.contains("写文件") || text.contains("生成文件")
+                    || text.contains("输出文件") || text.contains("保存"));
             if (wantFile && result != null && !result.isEmpty()) {
                 String baseName = fileName.replaceAll("\\.[^.]+$", "");
                 client.sendFile(fromUserId, result.getBytes("UTF-8"), baseName + "_总结.txt", "");
@@ -473,7 +488,8 @@ public class WeChatBotService {
 
         boolean isOffice = lower.endsWith(".doc") || lower.endsWith(".docx")
                 || lower.endsWith(".xls") || lower.endsWith(".xlsx")
-                || lower.endsWith(".ppt") || lower.endsWith(".pptx");
+                || lower.endsWith(".ppt") || lower.endsWith(".pptx")
+                || lower.endsWith(".pdf");
 
         if (!isOffice && isBinarySignature(bytes)) return null;
 
