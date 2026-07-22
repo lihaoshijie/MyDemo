@@ -9,6 +9,7 @@ import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalConversationP
 import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalConversationResult;
 import com.alibaba.dashscope.common.MultiModalMessage;
 import com.alibaba.dashscope.common.Role;
+import com.Myself.demo.util.FileUtil;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -17,9 +18,6 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.Arrays;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -40,8 +38,7 @@ public class ImageService {
 
     public String recognizeImage(byte[] imageBytes, String question) {
         try {
-            Path tempFile = Files.createTempFile("wechat_img_", ".png");
-            Files.write(tempFile, imageBytes);
+            Path tempFile = FileUtil.createTempFile("wechat_img_", ".png", imageBytes);
 
             String q = question != null && !question.isEmpty() ? question : "描述图片内容";
 
@@ -62,7 +59,7 @@ public class ImageService {
 
             MultiModalConversationResult result = conv.call(param);
 
-            Files.deleteIfExists(tempFile);
+            FileUtil.deleteTempFile(tempFile);
 
             String answer = extractTextResult(result);
             log.info("识图完成: question={}, answer={}", q, answer.substring(0, Math.min(50, answer.length())));
@@ -120,8 +117,7 @@ public class ImageService {
             List<Map<String, Object>> content = new ArrayList<>();
 
             for (byte[] img : images) {
-                Path tmp = Files.createTempFile("transform_", ".png");
-                Files.write(tmp, img);
+                Path tmp = FileUtil.createTempFile("transform_", ".png", img);
                 tempPaths.add(tmp);
                 content.add(Map.of("image", tmp.toAbsolutePath().toString()));
             }
@@ -143,9 +139,7 @@ public class ImageService {
 
             ImageGenerationResult result = ig.call(param);
 
-            for (Path p : tempPaths) {
-                Files.deleteIfExists(p);
-            }
+            FileUtil.deleteTempFiles(tempPaths);
 
             String imageUrl = extractImageUrl(result);
             if (imageUrl == null || imageUrl.isEmpty()) {

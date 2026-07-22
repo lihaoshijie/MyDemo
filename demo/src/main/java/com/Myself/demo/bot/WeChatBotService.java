@@ -2,8 +2,9 @@ package com.Myself.demo.bot;
 
 import com.Myself.demo.service.ImageService;
 import com.Myself.demo.service.VoiceService;
-import com.Myself.demo.service.VoiceType;
 import com.Myself.demo.service.VoicePreferenceService;
+import com.Myself.demo.util.FileUtil;
+import com.Myself.demo.util.TimeUtil;
 import com.alibaba.dashscope.utils.OSSUtils;
 import org.apache.poi.xwpf.extractor.XWPFWordExtractor;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
@@ -25,8 +26,8 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.nio.file.Files;
 import java.nio.file.Path;
 
 @Slf4j
@@ -48,6 +49,9 @@ public class WeChatBotService {
     @Autowired
     private VoicePreferenceService voicePreferenceService;
 
+    @Autowired
+    private com.Myself.demo.service.LlmService llmService;
+
     @Value("${llm.api-key}")
     private String apiKey;
 
@@ -56,8 +60,9 @@ public class WeChatBotService {
     private static final int MAX_IMAGES = 5;
 
     private final ConcurrentHashMap<String, List<ImageEntry>> imageBuffers = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Boolean> voiceMode = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, String> lastFileResult = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, String> lastFileContent = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, String> lastFileName = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Long> voiceModeTime = new ConcurrentHashMap<>();
     private static final long VOICE_MODE_TTL = 5 * 60 * 1000;
 
@@ -69,7 +74,7 @@ public class WeChatBotService {
         ImageEntry(byte[] bytes, String desc) {
             this.bytes = bytes;
             this.desc = desc;
-            this.timestamp = System.currentTimeMillis();
+            this.timestamp = TimeUtil.nowMillis();
         }
     }
 
@@ -106,8 +111,8 @@ public class WeChatBotService {
             if (System.in.available() > 0) {
                 System.in.read(new byte[System.in.available()]);
             }
-            long deadline = System.currentTimeMillis() + 3000;
-            while (System.currentTimeMillis() < deadline) {
+            long deadline = TimeUtil.afterMillis(3000);
+            while (!TimeUtil.isPast(deadline)) {
                 if (System.in.available() > 0) {
                     System.in.read(new byte[System.in.available()]);
                     System.out.println("已取消自动登录，进入扫码模式");
@@ -191,6 +196,7 @@ public class WeChatBotService {
     }
 
     private void handleMessage(WeixinMessage msg) {
+        ToolExecutionContext.getAndClear();
         if (msg.getItem_list() == null) return;
 
         String fromUserId = msg.getFrom_user_id();
@@ -218,55 +224,6 @@ public class WeChatBotService {
 
         log.info("收到微信消息 from={}, text={}", fromUserId, text);
 
-        if (text.contains("关闭语音") || text.contains("关掉语音") || text.contains("结束语音")) {
-            voiceMode.remove(fromUserId);
-            voiceModeTime.remove(fromUserId);
-            voicePreferenceService.remove(fromUserId);
-            sendReply(fromUserId, "语音模式已关闭");
-            return;
-        }
-        if (text.contains("开启语音") || text.contains("打开语音") || text.contains("语音模式")) {
-            voiceMode.put(fromUserId, true);
-            voiceModeTime.put(fromUserId, System.currentTimeMillis());
-            sendReply(fromUserId, "语音模式已开启（5分钟无对话自动关闭）");
-            return;
-        }
-
-        if (text.contains("音色列表") || text.contains("有哪些音色") || text.contains("音色")) {
-            StringBuilder sb = new StringBuilder("🎙️ 可用音色：\n\n");
-            for (VoiceType vt : VoiceType.values()) {
-                sb.append(vt.getDescription()).append("\n");
-            }
-            sb.append("\n切换方式：切换 + 音色名，如「切换童声」");
-            sendReply(fromUserId, sb.toString());
-            return;
-        }
-
-        if ((text.contains("总结") || text.contains("导出") || text.contains("生成文件")
-                || text.contains("输出文件") || text.contains("保存"))
-                && !text.contains("这份文件") && !text.contains("这个文件")
-                && lastFileResult.get(fromUserId) != null) {
-            try {
-                client.sendFile(fromUserId,
-                        lastFileResult.get(fromUserId).getBytes("UTF-8"),
-                        "文件总结.txt", "");
-                log.info("从缓冲生成文件: {}", fromUserId);
-            } catch (Exception e) { log.warn("缓冲文件发送失败", e); }
-        }
-
-        String[] switchPrefixes = {"切换到", "切换", "换成", "换为", "换", "用"};
-        for (String p : switchPrefixes) {
-            if (text.startsWith(p)) {
-                String name = text.substring(p.length()).trim();
-                if (!name.isEmpty()) {
-                    VoiceType vt = VoiceType.fromName(name);
-                    voicePreferenceService.setVoiceCode(fromUserId, vt.getCode());
-                    sendReply(fromUserId, "已切换音色为 " + vt.getDescription());
-                    return;
-                }
-            }
-        }
-
         String firstWord = text.trim().split("\\s+")[0].toLowerCase();
         if (commandRouter.hasCommand(firstWord)) {
             clearImageBuffer(fromUserId);
@@ -278,18 +235,6 @@ public class WeChatBotService {
         List<ImageEntry> images = getValidImages(fromUserId);
 
         if (!images.isEmpty()) {
-            if (isRefreshRequest(text)) {
-                log.info("重新识别图片, from={}", fromUserId);
-                String lastQuestion = chatService.getLastUserQuestion(fromUserId);
-                String reExamPrompt = buildReExamPrompt(text, lastQuestion);
-                ImageEntry latest = images.get(images.size() - 1);
-                String answer = imageService.recognizeImage(latest.bytes, reExamPrompt);
-                latest.desc = answer;
-                chatService.addHistory(fromUserId, "[重新识别图片]", answer);
-                sendReply(fromUserId, answer);
-                return;
-            }
-
             String context = buildImageContext(images, text);
             log.info("图片上下文拼接, from={}, 图片数={}", fromUserId, images.size());
             String result = commandRouter.route(context, fromUserId);
@@ -308,8 +253,7 @@ public class WeChatBotService {
         List<ImageEntry> images = imageBuffers.get(userId);
         if (images == null || images.isEmpty()) return List.of();
 
-        long now = System.currentTimeMillis();
-        images.removeIf(e -> now - e.timestamp >= IMAGE_BUFFER_TTL);
+        images.removeIf(e -> TimeUtil.isExpired(e.timestamp, IMAGE_BUFFER_TTL));
 
         if (images.isEmpty()) {
             imageBuffers.remove(userId);
@@ -392,6 +336,8 @@ public class WeChatBotService {
     }
 
     private void sendReply(String fromUserId, String result, List<ImageEntry> images) {
+        ToolExecutionContext.PendingAction action = ToolExecutionContext.getAndClear();
+
         if (result == null || result.isEmpty()) {
             try {
                 client.sendText(fromUserId, "抱歉，我没理解你的意思，可以再说详细一点吗？");
@@ -402,32 +348,32 @@ public class WeChatBotService {
         }
 
         try {
-            if (result.startsWith("IMG_GEN:") || result.startsWith("TRANSFORM_GEN:")) {
-                String prompt = result.startsWith("TRANSFORM_GEN:")
-                        ? result.substring(14)
-                        : result.substring(8);
-                boolean isTransform = result.startsWith("TRANSFORM_GEN:");
-                log.info("生成图片: mode={}, prompt={}", isTransform ? "图生图" : "文生图", prompt);
-                client.sendText(fromUserId, "正在生成中，请稍候...");
-                byte[] imageBytes;
-                if (isTransform && images != null && !images.isEmpty()) {
-                    List<byte[]> imgBytes = new ArrayList<>();
-                    for (ImageEntry e : images) {
-                        imgBytes.add(e.bytes);
-                    }
-                    imageBytes = imageService.transformImage(imgBytes, prompt);
-                } else {
-                    imageBytes = imageService.generateImage(prompt);
+            if (action != null) {
+                switch (action.type()) {
+                    case "image_gen":
+                        doImageGen(fromUserId, action.prompt());
+                        return;
+                    case "image_transform":
+                        doImageTransform(fromUserId, action.prompt(), images);
+                        return;
+                    case "file_translate":
+                    case "file_extract":
+                    case "file_search":
+                        doFileToolAction(fromUserId, action);
+                        return;
+                    case "file_export":
+                        doFileExport(fromUserId);
+                        return;
+                    case "re_examine":
+                        doReExamine(fromUserId, action.prompt(), images);
+                        return;
                 }
-                client.sendImage(fromUserId, imageBytes, "image.png", "");
-                log.info("图片发送成功");
-            } else {
-                client.sendText(fromUserId, result);
-                log.info("回复消息成功: {}", result.substring(0, Math.min(50, result.length())));
             }
 
-            if (Boolean.TRUE.equals(voiceMode.get(fromUserId))
-                    && !result.startsWith("IMG_GEN:") && !result.startsWith("TRANSFORM_GEN:")) {
+            client.sendText(fromUserId, result);
+            log.info("回复消息成功: {}", result.substring(0, Math.min(50, result.length())));
+
+            if (action == null && voicePreferenceService.isVoiceEnabled(fromUserId)) {
                 try {
                     String voiceCode = voicePreferenceService.getVoiceCode(fromUserId);
                     byte[] mp3Bytes = voiceService.textToSpeechMp3(result, voiceCode);
@@ -449,6 +395,130 @@ public class WeChatBotService {
         }
     }
 
+    private void doImageGen(String fromUserId, String prompt) {
+        log.info("文生图: {}", prompt);
+        try {
+            client.sendText(fromUserId, "正在生成中，请稍候...");
+            byte[] imageBytes = imageService.generateImage(prompt);
+            client.sendImage(fromUserId, imageBytes, "image.png", "");
+            log.info("图片发送成功");
+        } catch (Exception e) {
+            log.error("图片生成失败", e);
+            try { client.sendText(fromUserId, "抱歉，图片生成失败，请稍后再试"); }
+            catch (Exception ex) { log.error("发送错误回复失败", ex); }
+        }
+    }
+
+    private void doImageTransform(String fromUserId, String prompt, List<ImageEntry> images) {
+        log.info("图生图: {}", prompt);
+        try {
+            client.sendText(fromUserId, "正在生成中，请稍候...");
+            byte[] imageBytes;
+            if (images != null && !images.isEmpty()) {
+                List<byte[]> imgBytes = new ArrayList<>();
+                for (ImageEntry e : images) {
+                    imgBytes.add(e.bytes);
+                }
+                imageBytes = imageService.transformImage(imgBytes, prompt);
+            } else {
+                imageBytes = imageService.generateImage(prompt);
+            }
+            client.sendImage(fromUserId, imageBytes, "image.png", "");
+            log.info("图片发送成功");
+        } catch (Exception e) {
+            log.error("图片变换失败", e);
+            try { client.sendText(fromUserId, "抱歉，图片处理失败，请稍后再试"); }
+            catch (Exception ex) { log.error("发送错误回复失败", ex); }
+        }
+    }
+
+    private void doFileExport(String fromUserId) {
+        String cached = lastFileResult.get(fromUserId);
+        if (cached == null || cached.isEmpty()) return;
+        try {
+            client.sendFile(fromUserId, cached.getBytes("UTF-8"), "文件总结.txt", "");
+            log.info("文件总结已发送: {}", fromUserId);
+        } catch (Exception e) {
+            log.error("文件总结发送失败", e);
+        }
+    }
+
+    private void doReExamine(String fromUserId, String question, List<ImageEntry> images) {
+        if (images == null || images.isEmpty()) return;
+        ImageEntry latest = images.get(images.size() - 1);
+        String prompt = "请仔细观察图片";
+        if (question != null && !question.isEmpty()) {
+            prompt += "，只回答这个问题：" + question;
+        }
+        prompt += "。直接回答，不要输出无关的图片描述。";
+        try {
+            client.sendText(fromUserId, "正在重新识别中...");
+            String answer = imageService.recognizeImage(latest.bytes, prompt);
+            latest.desc = answer;
+            client.sendText(fromUserId, answer);
+            log.info("重新识别图片成功");
+        } catch (Exception e) {
+            log.error("重新识别图片失败", e);
+            try { client.sendText(fromUserId, "抱歉，重新识别失败，请稍后再试"); }
+            catch (Exception ex) { log.error("发送错误回复失败", ex); }
+        }
+    }
+
+    private void doFileToolAction(String fromUserId, ToolExecutionContext.PendingAction action) {
+        String content = lastFileContent.get(fromUserId);
+        String fileName = lastFileName.get(fromUserId);
+        if (content == null || content.isEmpty()) {
+            try { client.sendText(fromUserId, "没有找到已上传的文件内容，请先发送文件"); }
+            catch (Exception ex) { log.error("发送错误回复失败", ex); }
+            return;
+        }
+
+        String baseName = fileName != null ? fileName.replaceAll("\\.[^.]+$", "") : "file";
+        String output = null;
+        String outputName = null;
+
+        switch (action.type()) {
+            case "file_translate": {
+                String lang = action.arg1() != null ? action.arg1() : "英语";
+                String instruction = action.arg2() != null ? action.arg2() : "";
+                String prompt = "请将以下文件内容翻译为" + lang + (instruction.isEmpty() ? "" : "，" + instruction) + "：\n\n" + content;
+                output = llmService.chat(fromUserId, java.util.List.of(java.util.Map.of("role", "user", "content", prompt)));
+                outputName = baseName + "_翻译_" + lang + ".txt";
+                break;
+            }
+            case "file_extract": {
+                String keyword = action.arg1() != null ? action.arg1() : "";
+                String format = action.arg2() != null ? action.arg2() : "原文";
+                String prompt = "请从以下文件内容中提取" + keyword + "，以" + format + "格式输出：\n\n" + content;
+                output = llmService.chat(fromUserId, java.util.List.of(java.util.Map.of("role", "user", "content", prompt)));
+                outputName = baseName + "_提取_" + keyword + ".txt";
+                break;
+            }
+            case "file_search": {
+                String query = action.arg1() != null ? action.arg1() : "";
+                int contextLines = action.argInt() > 0 ? action.argInt() : 2;
+                String prompt = "请在以下文件内容中搜索\"" + query + "\"，显示匹配行及前后" + contextLines + "行上下文：\n\n" + content;
+                output = llmService.chat(fromUserId, java.util.List.of(java.util.Map.of("role", "user", "content", prompt)));
+                outputName = baseName + "_搜索_" + query + ".txt";
+                break;
+            }
+        }
+
+        if (output != null && !output.isEmpty()) {
+            try {
+                client.sendFile(fromUserId, output.getBytes("UTF-8"), outputName, "");
+                log.info("文件工具结果已发送: {}", outputName);
+            } catch (Exception e) {
+                log.error("发送文件失败", e);
+                try { client.sendText(fromUserId, "文件处理完成但发送失败"); }
+                catch (Exception ex) { log.error("发送错误回复失败", ex); }
+            }
+        } else {
+            try { client.sendText(fromUserId, "处理失败，请稍后重试"); }
+            catch (Exception ex) { log.error("发送错误回复失败", ex); }
+        }
+    }
+
     private void handleFileMessage(String fromUserId, MessageItem fileItem, String text) {
         String fileName = fileItem.getFile_item() != null
                 ? fileItem.getFile_item().getFile_name() : "file";
@@ -458,12 +528,14 @@ public class WeChatBotService {
             String content = extractTextContent(fileBytes, fileName);
 
             if (content == null || content.isEmpty()) {
-                Path tmp = Files.createTempFile("wxfile_", "_" + fileName);
-                Files.write(tmp, fileBytes);
+                Path tmp = FileUtil.createTempFile("wxfile_", "_" + fileName, fileBytes);
                 String ossUrl = OSSUtils.upload("qwen-plus", tmp.toAbsolutePath().toString(), apiKey);
-                Files.deleteIfExists(tmp);
+                FileUtil.deleteTempFile(tmp);
                 content = "文件链接: " + ossUrl;
             }
+
+            lastFileContent.put(fromUserId, content);
+            lastFileName.put(fromUserId, fileName);
 
             String question = text != null && !text.isEmpty()
                     ? "用户上传了一个文件(" + fileName + ")，文件内容如下：\n\n" + content
@@ -474,15 +546,6 @@ public class WeChatBotService {
             String result = commandRouter.route(question, fromUserId);
             sendReply(fromUserId, result);
             lastFileResult.put(fromUserId, result);
-
-            boolean wantFile = text != null && (text.contains("总结") || text.contains("导出")
-                    || text.contains("写文件") || text.contains("生成文件")
-                    || text.contains("输出文件") || text.contains("保存"));
-            if (wantFile && result != null && !result.isEmpty()) {
-                String baseName = fileName.replaceAll("\\.[^.]+$", "");
-                client.sendFile(fromUserId, result.getBytes("UTF-8"), baseName + "_总结.txt", "");
-                log.info("总结文件已发送: {}", baseName);
-            }
         } catch (Exception e) {
             log.error("处理文件消息失败", e);
             try { client.sendText(fromUserId, "抱歉，文件处理失败，请稍后再试"); }
@@ -490,26 +553,64 @@ public class WeChatBotService {
         }
     }
 
+    private void handleFileToolResult(String fromUserId, String result) {
+        try {
+            String content = lastFileContent.get(fromUserId);
+            String fileName = lastFileName.get(fromUserId);
+            if (content == null || content.isEmpty()) {
+                client.sendText(fromUserId, "没有找到已上传的文件内容，请先发送文件");
+                return;
+            }
+
+            String baseName = fileName != null ? fileName.replaceAll("\\.[^.]+$", "") : "file";
+            String jsonArgs = result.substring(result.indexOf(':') + 1);
+            com.fasterxml.jackson.databind.JsonNode args = new com.fasterxml.jackson.databind.ObjectMapper().readTree(jsonArgs);
+
+            String output = null;
+            String outputName = null;
+
+            if (result.startsWith("FILE_TRANSLATE:")) {
+                String lang = args.has("target_language") ? args.get("target_language").asText() : "英语";
+                String instruction = args.has("instruction") ? args.get("instruction").asText() : "";
+                String prompt = "请将以下文件内容翻译为" + lang + (instruction.isEmpty() ? "" : "，" + instruction) + "：\n\n" + content;
+                output = llmService.chat(fromUserId, List.of(Map.of("role", "user", "content", prompt)));
+                outputName = baseName + "_翻译_" + lang + ".txt";
+            } else if (result.startsWith("FILE_EXTRACT:")) {
+                String keyword = args.has("keyword") ? args.get("keyword").asText() : "";
+                String format = args.has("format") ? args.get("format").asText() : "原文";
+                String prompt = "请从以下文件内容中提取" + keyword + "，以" + format + "格式输出：\n\n" + content;
+                output = llmService.chat(fromUserId, List.of(Map.of("role", "user", "content", prompt)));
+                outputName = baseName + "_提取_" + keyword + ".txt";
+            } else if (result.startsWith("FILE_SEARCH:")) {
+                String query = args.has("query") ? args.get("query").asText() : "";
+                int contextLines = args.has("context_lines") ? args.get("context_lines").asInt() : 2;
+                String prompt = "请在以下文件内容中搜索\"" + query + "\"，显示匹配行及前后" + contextLines + "行上下文：\n\n" + content;
+                output = llmService.chat(fromUserId, List.of(Map.of("role", "user", "content", prompt)));
+                outputName = baseName + "_搜索_" + query + ".txt";
+            }
+
+            if (output != null && !output.isEmpty()) {
+                client.sendFile(fromUserId, output.getBytes("UTF-8"), outputName, "");
+                log.info("文件工具结果已发送: {}", outputName);
+            } else {
+                client.sendText(fromUserId, "处理失败，请稍后重试");
+            }
+        } catch (Exception e) {
+            log.error("处理文件工具结果失败", e);
+            try { client.sendText(fromUserId, "文件处理失败，请稍后重试"); }
+            catch (Exception ex) { log.error("发送错误回复失败", ex); }
+        }
+    }
+
     private String extractTextContent(byte[] bytes, String fileName) {
         String lower = fileName.toLowerCase();
 
-        boolean isOffice = lower.endsWith(".doc") || lower.endsWith(".docx")
-                || lower.endsWith(".xls") || lower.endsWith(".xlsx")
-                || lower.endsWith(".ppt") || lower.endsWith(".pptx")
-                || lower.endsWith(".pdf");
+        boolean isOffice = FileUtil.isOfficeExtension(lower);
+        if (!isOffice && FileUtil.isBinarySignature(bytes)) return null;
 
-        if (!isOffice && isBinarySignature(bytes)) return null;
+        boolean isText = FileUtil.isTextExtension(lower);
 
-        boolean isText = lower.endsWith(".txt") || lower.endsWith(".md") || lower.endsWith(".json")
-                || lower.endsWith(".csv") || lower.endsWith(".xml") || lower.endsWith(".html")
-                || lower.endsWith(".log") || lower.endsWith(".java") || lower.endsWith(".py")
-                || lower.endsWith(".yaml") || lower.endsWith(".yml") || lower.endsWith(".sql")
-                || lower.endsWith(".c") || lower.endsWith(".cpp") || lower.endsWith(".h")
-                || lower.endsWith(".js") || lower.endsWith(".ts") || lower.endsWith(".css")
-                || lower.endsWith(".sh") || lower.endsWith(".bat") || lower.endsWith(".ini")
-                || lower.endsWith(".cfg") || lower.endsWith(".conf");
-
-        if (isText) return tryDecodeText(bytes, 50000);
+        if (isText) return FileUtil.decodeText(bytes, 50000);
         if (isOffice) return extractWithPoi(bytes, fileName);
 
         return null;
@@ -556,41 +657,7 @@ public class WeChatBotService {
         } catch (Exception e) {
             log.warn("POI 提取失败, 回退文本尝试: {}", e.getMessage());
         }
-        return tryDecodeText(bytes, 5000);
-    }
-
-    private String tryDecodeText(byte[] bytes, int maxLen) {
-        for (String charset : new String[]{"UTF-8", "GBK"}) {
-            try {
-                String s = new String(bytes, charset);
-                int len = Math.min(s.length(), 1000);
-                int valid = 0;
-                for (int i = 0; i < len; i++) {
-                    char c = s.charAt(i);
-                    if (c >= 0x4e00 && c <= 0x9fff) valid++;
-                    else if (c >= 'a' && c <= 'z') valid++;
-                    else if (c >= 'A' && c <= 'Z') valid++;
-                    else if (c >= '0' && c <= '9') valid++;
-                    else if (c == ' ' || c == '\n' || c == '\r' || c == '\t') valid++;
-                }
-                if (valid > len * 0.5) {
-                    return s.length() > maxLen ? s.substring(0, maxLen) + "\n...(内容过长已截断)" : s;
-                }
-            } catch (Exception ignored) {}
-        }
-        return null;
-    }
-
-    private boolean isBinarySignature(byte[] bytes) {
-        if (bytes == null || bytes.length < 4) return false;
-        int b0 = bytes[0] & 0xFF, b1 = bytes[1] & 0xFF, b2 = bytes[2] & 0xFF, b3 = bytes[3] & 0xFF;
-        return (b0 == 0x50 && b1 == 0x4B)  // PK (zip/docx/xlsx/pptx)
-            || (b0 == 0x25 && b1 == 0x50 && b2 == 0x44 && b3 == 0x46)  // %PDF
-            || (b0 == 0xD0 && b1 == 0xCF && b2 == 0x11 && b3 == 0xE0)  // .doc
-            || (b0 == 0x89 && b1 == 0x50 && b2 == 0x4E && b3 == 0x47)  // PNG
-            || (b0 == 0xFF && b1 == 0xD8)  // JPEG
-            || (b0 == 0x47 && b1 == 0x49 && b2 == 0x46)  // GIF
-            || (b0 == 0x1F && b1 == 0x8B);  // GZIP
+        return FileUtil.decodeText(bytes, 5000);
     }
 
     private MessageItem extractFile(WeixinMessage msg) {
@@ -646,32 +713,6 @@ public class WeChatBotService {
         return null;
     }
 
-    private boolean isRefreshRequest(String text) {
-        if (text == null) return false;
-        String lower = text.toLowerCase();
-        String[] keywords = {"仔细看看", "再看看", "重新看看", "再看一下", "仔细观察",
-                "重新识别", "重新描述", "再描述", "仔细描述", "重新读", "再读"};
-        for (String kw : keywords) {
-            if (lower.contains(kw)) return true;
-        }
-        return false;
-    }
-
-    private boolean isTransformRequest(String text) {
-        if (text == null) return false;
-        String lower = text.toLowerCase();
-        String[] keywords = {"变", "改成", "变成", "转成", "换", "调成", "调整",
-                "风格", "卡通", "动漫", "油画", "素描", "水彩", "手绘",
-                "滤镜", "复古", "黑白", "像素", "抽象", "写实",
-                "P图", "p图", "p掉", "P掉", "编辑", "修改", "美化",
-                "移除", "去掉", "删除", "抠掉", "擦除", "消除",
-                "换成", "替换", "加", "加上", "添加"};
-        for (String kw : keywords) {
-            if (lower.contains(kw)) return true;
-        }
-        return false;
-    }
-
     private String extractFirstSentence(String text) {
         if (text == null || text.isEmpty()) return "";
         int period = text.indexOf("。");
@@ -683,45 +724,6 @@ public class WeChatBotService {
             return text.substring(0, newline);
         }
         return text.length() > 200 ? text.substring(0, 200) + "..." : text;
-    }
-
-    private String buildReExamPrompt(String userText, String lastQuestion) {
-        String lower = userText.toLowerCase();
-        String[] correctionKeywords = {"不是", "不对", "错了", "有误", "错误", "搞错", "错了吧"};
-        boolean isCorrection = false;
-        for (String kw : correctionKeywords) {
-            if (lower.contains(kw)) {
-                isCorrection = true;
-                break;
-            }
-        }
-
-        String coreQuestion = userText
-                .replaceAll("你再?仔细看看", "")
-                .replaceAll("你再?看看", "")
-                .replaceAll("重新看看", "")
-                .replaceAll("仔细观察", "")
-                .trim();
-
-        if (isCorrection) {
-            return "用户指出之前的回答有误。用户说：'" + userText + "'。"
-                    + "请仔细重新观察图片，准确判断用户质疑的内容是否正确，"
-                    + "直接回答是或不是，并给出依据。不要输出无关描述。";
-        }
-
-        if (!coreQuestion.isEmpty()) {
-            return "请仔细观察图片，只回答这个问题：" + coreQuestion
-                    + "。直接回答，不要输出无关的图片描述。";
-        }
-
-        if (lastQuestion != null && !lastQuestion.isEmpty()
-                && !lastQuestion.startsWith("[")
-                && lastQuestion.length() < 50) {
-            return "请仔细观察图片，只回答这个问题：" + lastQuestion
-                    + "。直接回答，不要输出无关的图片描述。";
-        }
-
-        return "请仔细重新观察这张图片的细节，给出更准确的描述。";
     }
 
     @PreDestroy

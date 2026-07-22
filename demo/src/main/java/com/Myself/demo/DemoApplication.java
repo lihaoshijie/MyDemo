@@ -33,6 +33,8 @@ public class DemoApplication {
         @Override
         public void run(String... args) {
             log.info("应用启动完成，启动 CLI 和微信 Bot");
+
+            System.out.println("test");
             weChatBotService.start();
             commandExecutor.start();
         }

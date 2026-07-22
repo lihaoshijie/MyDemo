@@ -5,16 +5,13 @@ import com.Myself.demo.exception.BusinessException;
 import com.Myself.demo.service.ChatService;
 import com.Myself.demo.service.LlmService;
 import com.Myself.demo.service.LlmService.LlmResult;
-import com.Myself.demo.service.MemoryService;
-import com.Myself.demo.service.VoicePreferenceService;
-import com.Myself.demo.service.VoiceType;
-import com.alibaba.dashscope.tools.FunctionDefinition;
 import com.alibaba.dashscope.tools.ToolFunction;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -27,20 +24,17 @@ public class CommandRouter {
     private final Map<String, Command> commands;
     private final ChatService chatService;
     private final LlmService llmService;
-    private final MemoryService memoryService;
-    private final VoicePreferenceService voicePreferenceService;
+    private final ToolRegistry toolRegistry;
     private final ObjectMapper objectMapper;
-    private final List<ToolFunction> tools;
 
-    public CommandRouter(List<Command> commandList, ChatService chatService, LlmService llmService, MemoryService memoryService, VoicePreferenceService voicePreferenceService) {
+    public CommandRouter(List<Command> commandList, ChatService chatService,
+                         LlmService llmService, @Lazy ToolRegistry toolRegistry) {
         this.commands = commandList.stream()
                 .collect(Collectors.toMap(Command::getName, Function.identity()));
         this.chatService = chatService;
         this.llmService = llmService;
-        this.memoryService = memoryService;
-        this.voicePreferenceService = voicePreferenceService;
+        this.toolRegistry = toolRegistry;
         this.objectMapper = new ObjectMapper();
-        this.tools = buildTools();
     }
 
     public boolean hasCommand(String name) {
@@ -58,46 +52,39 @@ public class CommandRouter {
 
         Command cmd = commands.get(cmdName);
         if (cmd != null) {
-            String[] args = parts.length > 1 ? new String[] { parts[1] } : new String[0];
+            String[] args = parts.length > 1 ? new String[]{parts[1]} : new String[0];
             return executeCommand(cmd, cmdName, args);
         }
 
         log.info("未匹配直接命令，LLM function calling: {}", trimmed);
         List<Map<String, String>> history = chatService.getHistory(userId);
+        List<ToolFunction> tools = toolRegistry.buildTools();
         LlmResult result = llmService.chat(trimmed, tools, history, userId);
 
         if (result.isFunctionCall()) {
             String fnName = result.getFunctionName();
             String fnArgs = result.getFunctionArgs();
+            String toolResult;
 
-            if ("generate_image".equals(fnName)) {
-                String prompt = extractPrompt(fnArgs);
-                log.info("文生图: {}", prompt);
-                return "IMG_GEN:" + prompt;
+            toolResult = toolRegistry.execute(fnName, fnArgs, userId);
+            if (toolResult == null) {
+                Command fnCmd = commands.get(fnName);
+                if (fnCmd != null) {
+                    String[] cmdArgs = extractArgs(fnArgs);
+                    toolResult = executeCommand(fnCmd, fnName, cmdArgs);
+                }
             }
 
-            if ("transform_image".equals(fnName)) {
-                String prompt = extractPrompt(fnArgs);
-                log.info("图生图: {}", prompt);
-                return "TRANSFORM_GEN:" + prompt;
-            }
-
-            if ("remember_fact".equals(fnName)) {
-                return handleRememberFact(fnArgs, userId);
-            }
-
-            if ("switch_voice".equals(fnName)) {
-                return handleSwitchVoice(fnArgs, userId);
-            }
-
-            Command fnCmd = commands.get(fnName);
-
-            if (fnCmd != null) {
-                log.info("Function calling: {}({})", fnName, fnArgs);
-                String[] cmdArgs = extractArgs(fnArgs);
-                String cmdResult = executeCommand(fnCmd, fnName, cmdArgs);
-                chatService.addHistory(userId, trimmed, cmdResult);
-                return cmdResult;
+            if (toolResult != null) {
+                log.info("工具执行: {} → {}", fnName, toolResult.substring(0, Math.min(50, toolResult.length())));
+                LlmResult reactResult = llmService.continueWithToolResult(
+                        trimmed, history, fnName, fnArgs, toolResult, tools, userId);
+                if (reactResult.isText()) {
+                    String reply = reactResult.getContent();
+                    chatService.addHistory(userId, trimmed, reply);
+                    return reply;
+                }
+                return toolResult;
             }
         }
 
@@ -110,133 +97,22 @@ public class CommandRouter {
         return "无法处理此消息";
     }
 
-    private String handleRememberFact(String fnArgs, String userId) {
-        try {
-            com.fasterxml.jackson.databind.JsonNode argsNode = objectMapper.readTree(fnArgs);
-            String key = argsNode.has("key") ? argsNode.get("key").asText() : "";
-            String value = argsNode.has("value") ? argsNode.get("value").asText() : "";
-            if (!key.isEmpty() && !value.isEmpty()) {
-                memoryService.setFact(userId, key, value);
-                log.info("记住用户信息: {}={}", key, value);
-                return "好的，已记住你的" + key + "是" + value;
-            }
-            return "抱歉，我没记住";
-        } catch (Exception e) {
-            log.warn("解析记忆参数失败: {}", fnArgs, e);
-            return "抱歉，没记住";
-        }
-    }
-
-    private String handleSwitchVoice(String fnArgs, String userId) {
-        try {
-            com.fasterxml.jackson.databind.JsonNode argsNode = objectMapper.readTree(fnArgs);
-            String voiceName = argsNode.has("voice_name") ? argsNode.get("voice_name").asText() : "";
-            if (voiceName.isEmpty()) {
-                return "请告诉我你想用什么音色，可用音色：默认男声、女声元气、女声欢脱、女声童声、女声冷静、女声共情、女声知性";
-            }
-            VoiceType vt = VoiceType.fromName(voiceName);
-            voicePreferenceService.setVoiceCode(userId, vt.getCode());
-            log.info("LLM切换音色: {} -> {}", voiceName, vt.getDescription());
-            return "已切换音色为 " + vt.getDescription();
-        } catch (Exception e) {
-            log.warn("解析音色参数失败: {}", fnArgs, e);
-            return "音色切换失败，请重试";
-        }
-    }
-
     private String[] extractArgs(String fnArgs) {
         try {
             if (fnArgs == null || fnArgs.trim().isEmpty()) {
                 return new String[0];
             }
-            com.fasterxml.jackson.databind.JsonNode argsNode = objectMapper.readTree(fnArgs);
+            JsonNode argsNode = objectMapper.readTree(fnArgs);
             String city = argsNode.has("city") ? argsNode.get("city").asText() : "";
             int days = argsNode.has("days") ? argsNode.get("days").asInt(1) : 1;
             if (!city.isEmpty()) {
-                return new String[] { city, String.valueOf(days) };
+                return new String[]{city, String.valueOf(days)};
             }
             return new String[0];
         } catch (Exception e) {
             log.warn("解析函数参数失败: {}", fnArgs, e);
             return new String[0];
         }
-    }
-
-    private String extractPrompt(String fnArgs) {
-        try {
-            com.fasterxml.jackson.databind.JsonNode argsNode = objectMapper.readTree(fnArgs);
-            return argsNode.has("prompt") ? argsNode.get("prompt").asText() : "";
-        } catch (Exception e) {
-            log.warn("解析prompt参数失败: {}", fnArgs, e);
-            return "";
-        }
-    }
-
-    private List<ToolFunction> buildTools() {
-        List<ToolFunction> tools = new ArrayList<>();
-
-        tools.add(ToolFunction.builder()
-                .function(FunctionDefinition.builder()
-                        .name("weather")
-                        .description("查询全球任意城市的实时天气或未来天气预报。支持所有城市，包括国内和国际城市（如北京、纽约、东京、伦敦等）。只支持实时天气和未来几天的预报，不支持查询历史天气（昨天、前天等）。对于主观天气感受（如热不热、冷不冷）或历史天气，请直接回答，不要调用此工具。")
-                        .parameters(LlmService.buildWeatherParams())
-                        .build())
-                .build());
-
-        tools.add(ToolFunction.builder()
-                .function(FunctionDefinition.builder()
-                        .name("help")
-                        .description("显示可用命令列表和帮助信息")
-                        .build())
-                .build());
-
-        tools.add(ToolFunction.builder()
-                .function(FunctionDefinition.builder()
-                        .name("status")
-                        .description("查看系统运行状态，包括运行时间、内存使用、CPU核数等")
-                        .build())
-                .build());
-
-        tools.add(ToolFunction.builder()
-                .function(FunctionDefinition.builder()
-                        .name("version")
-                        .description("查看项目版本号、Spring Boot版本、Java版本等技术信息")
-                        .build())
-                .build());
-
-        tools.add(ToolFunction.builder()
-                .function(FunctionDefinition.builder()
-                        .name("generate_image")
-                        .description("从零生成一张全新的图片。当用户说'画'、'生成'、'制作'等，且不涉及修改已有图片时使用。注意：如果用户的请求涉及已有图片的操作（如合并、融合、变风格、P掉、移除），请不要使用此工具，改用 transform_image。")
-                        .parameters(LlmService.buildImageGenParams())
-                        .build())
-                .build());
-
-        tools.add(ToolFunction.builder()
-                .function(FunctionDefinition.builder()
-                        .name("transform_image")
-                        .description("基于用户已发送的图片进行变换、编辑、合并或融合。当用户的请求涉及对已有图片的操作时，使用此工具。系统会自动把原图传给AI作为参考。注意：不要在回复中生成工具名称文字，请直接调用此工具。")
-                        .parameters(LlmService.buildImageGenParams())
-                        .build())
-                .build());
-
-        tools.add(ToolFunction.builder()
-                .function(FunctionDefinition.builder()
-                        .name("remember_fact")
-                        .description("记住用户的个人信息。当用户告诉你他的名字、生日、喜好、习惯等个人信息时，调用此工具保存。")
-                        .parameters(LlmService.buildMemoryParams())
-                        .build())
-                .build());
-
-        tools.add(ToolFunction.builder()
-                .function(FunctionDefinition.builder()
-                        .name("switch_voice")
-                        .description("切换语音播报的音色。当用户想换声音、觉得声音不好听、想用特定音色（如女声冷静、女声元气、童声等）时，调用此工具。可用音色：默认男声、女声元气、女声欢脱、女声童声、女声冷静、女声共情、女声知性。")
-                        .parameters(LlmService.buildVoiceSwitchParams())
-                        .build())
-                .build());
-
-        return tools;
     }
 
     private String executeCommand(Command cmd, String cmdName, String[] args) {

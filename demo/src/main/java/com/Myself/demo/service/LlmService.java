@@ -3,7 +3,6 @@ package com.Myself.demo.service;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonPrimitive;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -13,7 +12,6 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -83,49 +81,17 @@ public class LlmService {
 
     public LlmResult chat(String userMessage, List<? extends com.alibaba.dashscope.tools.ToolBase> tools, List<Map<String, String>> history, String userId) {
         try {
-            JsonObject body = new JsonObject();
-            body.addProperty("model", model);
-            body.addProperty("max_tokens", 4096);
-
-            JsonArray messages = new JsonArray();
-            JsonObject sysMsg = new JsonObject();
-            sysMsg.addProperty("role", "system");
-            sysMsg.addProperty("content", buildSystemPrompt(userId));
-            messages.add(sysMsg);
-
-            if (history != null) {
-                for (Map<String, String> msg : history) {
-                    JsonObject m = new JsonObject();
-                    m.addProperty("role", msg.get("role"));
-                    m.addProperty("content", msg.get("content"));
-                    messages.add(m);
-                }
-            }
+            JsonArray messages = buildBaseMessages(userId, history);
             JsonObject userMsg = new JsonObject();
             userMsg.addProperty("role", "user");
             userMsg.addProperty("content", userMessage);
             messages.add(userMsg);
-            body.add("messages", messages);
 
-            if (tools != null && !tools.isEmpty()) {
-                JsonArray toolsArray = new JsonArray();
-                for (com.alibaba.dashscope.tools.ToolBase tool : tools) {
-                    if (tool instanceof com.alibaba.dashscope.tools.ToolFunction) {
-                        com.alibaba.dashscope.tools.FunctionDefinition fd = ((com.alibaba.dashscope.tools.ToolFunction) tool).getFunction();
-                        JsonObject toolObj = new JsonObject();
-                        toolObj.addProperty("type", "function");
-                        JsonObject funcObj = new JsonObject();
-                        funcObj.addProperty("name", fd.getName());
-                        funcObj.addProperty("description", fd.getDescription());
-                        if (fd.getParameters() != null) {
-                            funcObj.add("parameters", gson.toJsonTree(fd.getParameters()));
-                        }
-                        toolObj.add("function", funcObj);
-                        toolsArray.add(toolObj);
-                    }
-                }
-                body.add("tools", toolsArray);
-            }
+            JsonObject body = new JsonObject();
+            body.addProperty("model", model);
+            body.addProperty("max_tokens", 4096);
+            body.add("messages", messages);
+            addTools(body, tools);
 
             JsonObject result = callApi(body);
             return parseResult(result);
@@ -133,6 +99,96 @@ public class LlmService {
             log.error("LLM 调用异常", e);
             return LlmResult.text("AI 服务暂时不可用，请稍后再试");
         }
+    }
+
+    public LlmResult continueWithToolResult(
+            String userMessage,
+            List<Map<String, String>> history,
+            String fnName,
+            String fnArgs,
+            String toolResult,
+            List<? extends com.alibaba.dashscope.tools.ToolBase> tools,
+            String userId) {
+        try {
+            JsonArray messages = buildBaseMessages(userId, history);
+            JsonObject userMsg = new JsonObject();
+            userMsg.addProperty("role", "user");
+            userMsg.addProperty("content", userMessage);
+            messages.add(userMsg);
+
+            JsonObject assistantMsg = new JsonObject();
+            assistantMsg.addProperty("role", "assistant");
+            assistantMsg.add("content", null);
+            JsonArray toolCalls = new JsonArray();
+            JsonObject toolCall = new JsonObject();
+            toolCall.addProperty("id", "call_" + fnName);
+            toolCall.addProperty("type", "function");
+            JsonObject function = new JsonObject();
+            function.addProperty("name", fnName);
+            function.addProperty("arguments", fnArgs);
+            toolCall.add("function", function);
+            toolCalls.add(toolCall);
+            assistantMsg.add("tool_calls", toolCalls);
+            messages.add(assistantMsg);
+
+            JsonObject toolMsg = new JsonObject();
+            toolMsg.addProperty("role", "tool");
+            toolMsg.addProperty("content", toolResult);
+            toolMsg.addProperty("tool_call_id", "call_" + fnName);
+            toolMsg.addProperty("name", fnName);
+            messages.add(toolMsg);
+
+            JsonObject body = new JsonObject();
+            body.addProperty("model", model);
+            body.addProperty("max_tokens", 4096);
+            body.add("messages", messages);
+            addTools(body, tools);
+
+            JsonObject result = callApi(body);
+            return parseResult(result);
+        } catch (Exception e) {
+            log.error("LLM ReAct 调用异常", e);
+            return LlmResult.text("AI 服务暂时不可用，请稍后再试");
+        }
+    }
+
+    private JsonArray buildBaseMessages(String userId, List<Map<String, String>> history) {
+        JsonArray messages = new JsonArray();
+        JsonObject sysMsg = new JsonObject();
+        sysMsg.addProperty("role", "system");
+        sysMsg.addProperty("content", buildSystemPrompt(userId));
+        messages.add(sysMsg);
+
+        if (history != null) {
+            for (Map<String, String> msg : history) {
+                JsonObject m = new JsonObject();
+                m.addProperty("role", msg.get("role"));
+                m.addProperty("content", msg.get("content"));
+                messages.add(m);
+            }
+        }
+        return messages;
+    }
+
+    private void addTools(JsonObject body, List<? extends com.alibaba.dashscope.tools.ToolBase> tools) {
+        if (tools == null || tools.isEmpty()) return;
+        JsonArray toolsArray = new JsonArray();
+        for (com.alibaba.dashscope.tools.ToolBase tool : tools) {
+            if (tool instanceof com.alibaba.dashscope.tools.ToolFunction) {
+                com.alibaba.dashscope.tools.FunctionDefinition fd = ((com.alibaba.dashscope.tools.ToolFunction) tool).getFunction();
+                JsonObject toolObj = new JsonObject();
+                toolObj.addProperty("type", "function");
+                JsonObject funcObj = new JsonObject();
+                funcObj.addProperty("name", fd.getName());
+                funcObj.addProperty("description", fd.getDescription());
+                if (fd.getParameters() != null) {
+                    funcObj.add("parameters", gson.toJsonTree(fd.getParameters()));
+                }
+                toolObj.add("function", funcObj);
+                toolsArray.add(toolObj);
+            }
+        }
+        body.add("tools", toolsArray);
     }
 
     private JsonObject callApi(JsonObject body) throws Exception {
@@ -184,81 +240,6 @@ public class LlmService {
 
         String content = msg.has("content") ? msg.get("content").getAsString() : "";
         return LlmResult.text(content);
-    }
-
-    public static JsonObject buildWeatherParams() {
-        JsonObject p = new JsonObject();
-        p.addProperty("type", "object");
-        JsonObject props = new JsonObject();
-        JsonObject city = new JsonObject();
-        city.addProperty("type", "string");
-        city.addProperty("description", "城市名称，如：北京、上海、杭州");
-        props.add("city", city);
-        JsonObject days = new JsonObject();
-        days.addProperty("type", "integer");
-        days.addProperty("description", "查询未来几天。1=实时，3=三天，7=七天，15=十五天。默认1");
-        JsonArray enums = new JsonArray();
-        enums.add(new JsonPrimitive(1));
-        enums.add(new JsonPrimitive(3));
-        enums.add(new JsonPrimitive(7));
-        enums.add(new JsonPrimitive(15));
-        days.add("enum", enums);
-        props.add("days", days);
-        p.add("properties", props);
-        JsonArray req = new JsonArray();
-        req.add(new JsonPrimitive("city"));
-        p.add("required", req);
-        return p;
-    }
-
-    public static JsonObject buildImageGenParams() {
-        JsonObject p = new JsonObject();
-        p.addProperty("type", "object");
-        JsonObject props = new JsonObject();
-        JsonObject prompt = new JsonObject();
-        prompt.addProperty("type", "string");
-        prompt.addProperty("description", "图片生成提示词，如：一只可爱的猫");
-        props.add("prompt", prompt);
-        p.add("properties", props);
-        JsonArray req = new JsonArray();
-        req.add(new JsonPrimitive("prompt"));
-        p.add("required", req);
-        return p;
-    }
-
-    public static JsonObject buildMemoryParams() {
-        JsonObject p = new JsonObject();
-        p.addProperty("type", "object");
-        JsonObject props = new JsonObject();
-        JsonObject key = new JsonObject();
-        key.addProperty("type", "string");
-        key.addProperty("description", "信息类别，如：名字、生日、喜好、职业");
-        props.add("key", key);
-        JsonObject value = new JsonObject();
-        value.addProperty("type", "string");
-        value.addProperty("description", "具体信息，如：托尼、5月20号、篮球、程序员");
-        props.add("value", value);
-        p.add("properties", props);
-        JsonArray req = new JsonArray();
-        req.add(new JsonPrimitive("key"));
-        req.add(new JsonPrimitive("value"));
-        p.add("required", req);
-        return p;
-    }
-
-    public static JsonObject buildVoiceSwitchParams() {
-        JsonObject p = new JsonObject();
-        p.addProperty("type", "object");
-        JsonObject props = new JsonObject();
-        JsonObject voice = new JsonObject();
-        voice.addProperty("type", "string");
-        voice.addProperty("description", "音色名称，如：女声冷静、女声元气、童声、默认男声、女声知性、女声共情、女声欢脱");
-        props.add("voice_name", voice);
-        p.add("properties", props);
-        JsonArray req = new JsonArray();
-        req.add(new JsonPrimitive("voice_name"));
-        p.add("required", req);
-        return p;
     }
 
     public static class LlmResult {
