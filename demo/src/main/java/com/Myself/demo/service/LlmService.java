@@ -1,18 +1,6 @@
 package com.Myself.demo.service;
 
-import com.alibaba.dashscope.aigc.generation.Generation;
-import com.alibaba.dashscope.aigc.generation.GenerationOutput.Choice;
-import com.alibaba.dashscope.aigc.generation.GenerationParam;
-import com.alibaba.dashscope.aigc.generation.GenerationResult;
-import com.alibaba.dashscope.common.Message;
-import com.alibaba.dashscope.common.Role;
-import com.alibaba.dashscope.exception.ApiException;
-import com.alibaba.dashscope.exception.InputRequiredException;
-import com.alibaba.dashscope.exception.NoApiKeyException;
-import com.alibaba.dashscope.tools.ToolBase;
-import com.alibaba.dashscope.tools.ToolCallBase;
-import com.alibaba.dashscope.tools.ToolCallFunction;
-import com.alibaba.dashscope.tools.ToolFunction;
+import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
@@ -20,6 +8,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -30,9 +23,11 @@ public class LlmService {
 
     private final String apiKey;
     private final String model;
+    private final String baseUrl;
     private final String systemPrompt;
-    private final Generation generation;
     private final MemoryService memoryService;
+    private final HttpClient httpClient;
+    private final Gson gson = new Gson();
 
     public LlmService(
             @Value("${llm.api-key}") String apiKey,
@@ -42,10 +37,13 @@ public class LlmService {
             MemoryService memoryService) {
         this.apiKey = apiKey;
         this.model = model;
+        this.baseUrl = baseUrl;
         this.systemPrompt = systemPrompt;
         this.memoryService = memoryService;
-        this.generation = new Generation();
-        log.info("LlmService 初始化完成, model: {}", model);
+        this.httpClient = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(30))
+                .build();
+        log.info("LlmService 初始化完成, model: {}, baseUrl: {}", model, baseUrl);
     }
 
     private String buildSystemPrompt(String userId) {
@@ -55,104 +53,137 @@ public class LlmService {
 
     public String chat(String userId, List<Map<String, String>> history) {
         try {
-            List<Message> messages = new ArrayList<>();
-            messages.add(Message.builder()
-                    .role(Role.SYSTEM.getValue())
-                    .content(buildSystemPrompt(userId))
-                    .build());
+            JsonObject body = new JsonObject();
+            body.addProperty("model", model);
+            body.addProperty("max_tokens", 2048);
+
+            JsonArray messages = new JsonArray();
+            JsonObject sysMsg = new JsonObject();
+            sysMsg.addProperty("role", "system");
+            sysMsg.addProperty("content", buildSystemPrompt(userId));
+            messages.add(sysMsg);
+
             if (history != null) {
                 for (Map<String, String> msg : history) {
-                    messages.add(Message.builder()
-                            .role(msg.get("role"))
-                            .content(msg.get("content"))
-                            .build());
+                    JsonObject m = new JsonObject();
+                    m.addProperty("role", msg.get("role"));
+                    m.addProperty("content", msg.get("content"));
+                    messages.add(m);
                 }
             }
+            body.add("messages", messages);
 
-            GenerationParam param = GenerationParam.builder()
-                    .apiKey(apiKey)
-                    .model(model)
-                    .messages(messages)
-                    .resultFormat("message")
-                    .build();
-
-            GenerationResult result = generation.call(param);
-            return extractTextFromResult(result);
-
+            JsonObject result = callApi(body);
+            return extractContent(result);
         } catch (Exception e) {
             log.error("LLM 对话调用异常", e);
             return "AI 服务暂时不可用，请稍后再试";
         }
     }
 
-    private String extractTextFromResult(GenerationResult result) {
-        List<Choice> choices = result.getOutput().getChoices();
-        if (choices == null || choices.isEmpty()) {
-            return "无回复内容";
-        }
-        return choices.get(0).getMessage().getContent();
-    }
-
-    public LlmResult chat(String userMessage, List<? extends ToolBase> tools, List<Map<String, String>> history, String userId) {
+    public LlmResult chat(String userMessage, List<? extends com.alibaba.dashscope.tools.ToolBase> tools, List<Map<String, String>> history, String userId) {
         try {
-            List<Message> messages = new ArrayList<>();
-            messages.add(Message.builder()
-                    .role(Role.SYSTEM.getValue())
-                    .content(buildSystemPrompt(userId))
-                    .build());
+            JsonObject body = new JsonObject();
+            body.addProperty("model", model);
+            body.addProperty("max_tokens", 4096);
+
+            JsonArray messages = new JsonArray();
+            JsonObject sysMsg = new JsonObject();
+            sysMsg.addProperty("role", "system");
+            sysMsg.addProperty("content", buildSystemPrompt(userId));
+            messages.add(sysMsg);
+
             if (history != null) {
                 for (Map<String, String> msg : history) {
-                    messages.add(Message.builder()
-                            .role(msg.get("role"))
-                            .content(msg.get("content"))
-                            .build());
+                    JsonObject m = new JsonObject();
+                    m.addProperty("role", msg.get("role"));
+                    m.addProperty("content", msg.get("content"));
+                    messages.add(m);
                 }
             }
-            messages.add(Message.builder()
-                    .role(Role.USER.getValue())
-                    .content(userMessage)
-                    .build());
-
-            GenerationParam.GenerationParamBuilder<?, ?> builder = GenerationParam.builder()
-                    .apiKey(apiKey)
-                    .model(model)
-                    .messages(messages)
-                    .resultFormat("message");
+            JsonObject userMsg = new JsonObject();
+            userMsg.addProperty("role", "user");
+            userMsg.addProperty("content", userMessage);
+            messages.add(userMsg);
+            body.add("messages", messages);
 
             if (tools != null && !tools.isEmpty()) {
-                builder.tools(new ArrayList<>(tools));
+                JsonArray toolsArray = new JsonArray();
+                for (com.alibaba.dashscope.tools.ToolBase tool : tools) {
+                    if (tool instanceof com.alibaba.dashscope.tools.ToolFunction) {
+                        com.alibaba.dashscope.tools.FunctionDefinition fd = ((com.alibaba.dashscope.tools.ToolFunction) tool).getFunction();
+                        JsonObject toolObj = new JsonObject();
+                        toolObj.addProperty("type", "function");
+                        JsonObject funcObj = new JsonObject();
+                        funcObj.addProperty("name", fd.getName());
+                        funcObj.addProperty("description", fd.getDescription());
+                        if (fd.getParameters() != null) {
+                            funcObj.add("parameters", gson.toJsonTree(fd.getParameters()));
+                        }
+                        toolObj.add("function", funcObj);
+                        toolsArray.add(toolObj);
+                    }
+                }
+                body.add("tools", toolsArray);
             }
 
-            GenerationResult result = generation.call(builder.build());
+            JsonObject result = callApi(body);
             return parseResult(result);
-
-        } catch (ApiException | NoApiKeyException | InputRequiredException e) {
+        } catch (Exception e) {
             log.error("LLM 调用异常", e);
             return LlmResult.text("AI 服务暂时不可用，请稍后再试");
         }
     }
 
-    private LlmResult parseResult(GenerationResult result) {
-        List<Choice> choices = result.getOutput().getChoices();
-        if (choices == null || choices.isEmpty()) {
-            return LlmResult.text("无回复内容");
+    private JsonObject callApi(JsonObject body) throws Exception {
+        String json = gson.toJson(body);
+        log.debug("LLM API 请求: model={}", body.get("model").getAsString());
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + "/chat/completions"))
+                .header("Content-Type", "application/json")
+                .header("Authorization", "Bearer " + apiKey)
+                .timeout(Duration.ofSeconds(60))
+                .POST(HttpRequest.BodyPublishers.ofString(json))
+                .build();
+
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+
+        if (response.statusCode() != 200) {
+            log.error("LLM API 错误: status={}, body={}", response.statusCode(), response.body());
+            throw new RuntimeException("API error: " + response.statusCode());
         }
 
-        Choice choice = choices.get(0);
-        Message msg = choice.getMessage();
+        return gson.fromJson(response.body(), JsonObject.class);
+    }
 
-        if (msg.getToolCalls() != null && !msg.getToolCalls().isEmpty()) {
-            ToolCallBase toolCall = msg.getToolCalls().get(0);
-            if ("function".equals(toolCall.getType())) {
-                ToolCallFunction funcCall = (ToolCallFunction) toolCall;
-                String fnName = funcCall.getFunction().getName();
-                String fnArgs = funcCall.getFunction().getArguments();
+    private String extractContent(JsonObject result) {
+        JsonArray choices = result.getAsJsonArray("choices");
+        if (choices == null || choices.isEmpty()) return "无回复内容";
+        JsonObject msg = choices.get(0).getAsJsonObject().getAsJsonObject("message");
+        return msg != null && msg.has("content") ? msg.get("content").getAsString() : "无回复内容";
+    }
+
+    private LlmResult parseResult(JsonObject result) {
+        JsonArray choices = result.getAsJsonArray("choices");
+        if (choices == null || choices.isEmpty()) return LlmResult.text("无回复内容");
+
+        JsonObject msg = choices.get(0).getAsJsonObject().getAsJsonObject("message");
+        if (msg == null) return LlmResult.text("无回复内容");
+
+        if (msg.has("tool_calls") && !msg.get("tool_calls").isJsonNull()) {
+            JsonArray toolCalls = msg.getAsJsonArray("tool_calls");
+            if (toolCalls != null && !toolCalls.isEmpty()) {
+                JsonObject toolCall = toolCalls.get(0).getAsJsonObject();
+                String fnName = toolCall.getAsJsonObject("function").get("name").getAsString();
+                String fnArgs = toolCall.getAsJsonObject("function").get("arguments").getAsString();
                 log.info("Function calling: {}({})", fnName, fnArgs);
                 return LlmResult.functionCall(fnName, fnArgs);
             }
         }
 
-        return LlmResult.text(msg.getContent());
+        String content = msg.has("content") ? msg.get("content").getAsString() : "";
+        return LlmResult.text(content);
     }
 
     public static JsonObject buildWeatherParams() {
@@ -211,6 +242,21 @@ public class LlmService {
         JsonArray req = new JsonArray();
         req.add(new JsonPrimitive("key"));
         req.add(new JsonPrimitive("value"));
+        p.add("required", req);
+        return p;
+    }
+
+    public static JsonObject buildVoiceSwitchParams() {
+        JsonObject p = new JsonObject();
+        p.addProperty("type", "object");
+        JsonObject props = new JsonObject();
+        JsonObject voice = new JsonObject();
+        voice.addProperty("type", "string");
+        voice.addProperty("description", "音色名称，如：女声冷静、女声元气、童声、默认男声、女声知性、女声共情、女声欢脱");
+        props.add("voice_name", voice);
+        p.add("properties", props);
+        JsonArray req = new JsonArray();
+        req.add(new JsonPrimitive("voice_name"));
         p.add("required", req);
         return p;
     }

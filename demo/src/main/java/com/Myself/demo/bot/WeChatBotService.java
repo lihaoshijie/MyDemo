@@ -3,6 +3,7 @@ package com.Myself.demo.bot;
 import com.Myself.demo.service.ImageService;
 import com.Myself.demo.service.VoiceService;
 import com.Myself.demo.service.VoiceType;
+import com.Myself.demo.service.VoicePreferenceService;
 import com.alibaba.dashscope.utils.OSSUtils;
 import org.apache.poi.xwpf.extractor.XWPFWordExtractor;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
@@ -44,6 +45,9 @@ public class WeChatBotService {
     @Autowired
     private VoiceService voiceService;
 
+    @Autowired
+    private VoicePreferenceService voicePreferenceService;
+
     @Value("${llm.api-key}")
     private String apiKey;
 
@@ -53,8 +57,9 @@ public class WeChatBotService {
 
     private final ConcurrentHashMap<String, List<ImageEntry>> imageBuffers = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, Boolean> voiceMode = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, String> voicePref = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, String> lastFileResult = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Long> voiceModeTime = new ConcurrentHashMap<>();
+    private static final long VOICE_MODE_TTL = 5 * 60 * 1000;
 
     private static class ImageEntry {
         byte[] bytes;
@@ -213,19 +218,21 @@ public class WeChatBotService {
 
         log.info("收到微信消息 from={}, text={}", fromUserId, text);
 
-        if ("开启语音".equals(text) || "打开语音".equals(text) || "语音模式".equals(text)) {
-            voiceMode.put(fromUserId, true);
-            sendReply(fromUserId, "语音模式已开启，我的回复会附带语音播报");
-            return;
-        }
-        if ("关闭语音".equals(text) || "关掉语音".equals(text) || "结束语音".equals(text)) {
+        if (text.contains("关闭语音") || text.contains("关掉语音") || text.contains("结束语音")) {
             voiceMode.remove(fromUserId);
-            voicePref.remove(fromUserId);
+            voiceModeTime.remove(fromUserId);
+            voicePreferenceService.remove(fromUserId);
             sendReply(fromUserId, "语音模式已关闭");
             return;
         }
+        if (text.contains("开启语音") || text.contains("打开语音") || text.contains("语音模式")) {
+            voiceMode.put(fromUserId, true);
+            voiceModeTime.put(fromUserId, System.currentTimeMillis());
+            sendReply(fromUserId, "语音模式已开启（5分钟无对话自动关闭）");
+            return;
+        }
 
-        if ("音色列表".equals(text) || "有哪些音色".equals(text) || "音色".equals(text)) {
+        if (text.contains("音色列表") || text.contains("有哪些音色") || text.contains("音色")) {
             StringBuilder sb = new StringBuilder("🎙️ 可用音色：\n\n");
             for (VoiceType vt : VoiceType.values()) {
                 sb.append(vt.getDescription()).append("\n");
@@ -247,13 +254,13 @@ public class WeChatBotService {
             } catch (Exception e) { log.warn("缓冲文件发送失败", e); }
         }
 
-        String[] switchPrefixes = {"切换", "换成", "换", "用"};
+        String[] switchPrefixes = {"切换到", "切换", "换成", "换为", "换", "用"};
         for (String p : switchPrefixes) {
             if (text.startsWith(p)) {
                 String name = text.substring(p.length()).trim();
                 if (!name.isEmpty()) {
                     VoiceType vt = VoiceType.fromName(name);
-                    voicePref.put(fromUserId, vt.getCode());
+                    voicePreferenceService.setVoiceCode(fromUserId, vt.getCode());
                     sendReply(fromUserId, "已切换音色为 " + vt.getDescription());
                     return;
                 }
@@ -422,7 +429,7 @@ public class WeChatBotService {
             if (Boolean.TRUE.equals(voiceMode.get(fromUserId))
                     && !result.startsWith("IMG_GEN:") && !result.startsWith("TRANSFORM_GEN:")) {
                 try {
-                    String voiceCode = voicePref.get(fromUserId);
+                    String voiceCode = voicePreferenceService.getVoiceCode(fromUserId);
                     byte[] mp3Bytes = voiceService.textToSpeechMp3(result, voiceCode);
                     if (mp3Bytes != null) {
                         client.sendFile(fromUserId, mp3Bytes, "语音.mp3", "");

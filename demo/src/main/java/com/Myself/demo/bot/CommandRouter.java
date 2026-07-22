@@ -6,6 +6,8 @@ import com.Myself.demo.service.ChatService;
 import com.Myself.demo.service.LlmService;
 import com.Myself.demo.service.LlmService.LlmResult;
 import com.Myself.demo.service.MemoryService;
+import com.Myself.demo.service.VoicePreferenceService;
+import com.Myself.demo.service.VoiceType;
 import com.alibaba.dashscope.tools.FunctionDefinition;
 import com.alibaba.dashscope.tools.ToolFunction;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -26,15 +28,17 @@ public class CommandRouter {
     private final ChatService chatService;
     private final LlmService llmService;
     private final MemoryService memoryService;
+    private final VoicePreferenceService voicePreferenceService;
     private final ObjectMapper objectMapper;
     private final List<ToolFunction> tools;
 
-    public CommandRouter(List<Command> commandList, ChatService chatService, LlmService llmService, MemoryService memoryService) {
+    public CommandRouter(List<Command> commandList, ChatService chatService, LlmService llmService, MemoryService memoryService, VoicePreferenceService voicePreferenceService) {
         this.commands = commandList.stream()
                 .collect(Collectors.toMap(Command::getName, Function.identity()));
         this.chatService = chatService;
         this.llmService = llmService;
         this.memoryService = memoryService;
+        this.voicePreferenceService = voicePreferenceService;
         this.objectMapper = new ObjectMapper();
         this.tools = buildTools();
     }
@@ -82,6 +86,10 @@ public class CommandRouter {
                 return handleRememberFact(fnArgs, userId);
             }
 
+            if ("switch_voice".equals(fnName)) {
+                return handleSwitchVoice(fnArgs, userId);
+            }
+
             Command fnCmd = commands.get(fnName);
 
             if (fnCmd != null) {
@@ -116,6 +124,23 @@ public class CommandRouter {
         } catch (Exception e) {
             log.warn("解析记忆参数失败: {}", fnArgs, e);
             return "抱歉，没记住";
+        }
+    }
+
+    private String handleSwitchVoice(String fnArgs, String userId) {
+        try {
+            com.fasterxml.jackson.databind.JsonNode argsNode = objectMapper.readTree(fnArgs);
+            String voiceName = argsNode.has("voice_name") ? argsNode.get("voice_name").asText() : "";
+            if (voiceName.isEmpty()) {
+                return "请告诉我你想用什么音色，可用音色：默认男声、女声元气、女声欢脱、女声童声、女声冷静、女声共情、女声知性";
+            }
+            VoiceType vt = VoiceType.fromName(voiceName);
+            voicePreferenceService.setVoiceCode(userId, vt.getCode());
+            log.info("LLM切换音色: {} -> {}", voiceName, vt.getDescription());
+            return "已切换音色为 " + vt.getDescription();
+        } catch (Exception e) {
+            log.warn("解析音色参数失败: {}", fnArgs, e);
+            return "音色切换失败，请重试";
         }
     }
 
@@ -182,7 +207,7 @@ public class CommandRouter {
         tools.add(ToolFunction.builder()
                 .function(FunctionDefinition.builder()
                         .name("generate_image")
-                        .description("从零生成一张全新的图片，完全不参考任何已有图片。仅在用户明确要画一张全新的、与现有图片无关的内容时使用。如果用户的请求涉及已有图片（如合并、结合、融合、修改、变换、P图），请使用 transform_image 而不是此工具。")
+                        .description("从零生成一张全新的图片。当用户说'画'、'生成'、'制作'等，且不涉及修改已有图片时使用。注意：如果用户的请求涉及已有图片的操作（如合并、融合、变风格、P掉、移除），请不要使用此工具，改用 transform_image。")
                         .parameters(LlmService.buildImageGenParams())
                         .build())
                 .build());
@@ -190,7 +215,7 @@ public class CommandRouter {
         tools.add(ToolFunction.builder()
                 .function(FunctionDefinition.builder()
                         .name("transform_image")
-                        .description("基于用户已发送的图片进行变换、编辑、合并或融合。只要用户的请求涉及对已有图片的操作（如结合、合并、融合、变风格、P掉、移除、替换、添加元素、把照片变成某种风格），都使用此工具。此工具会把原图传给AI作为参考。")
+                        .description("基于用户已发送的图片进行变换、编辑、合并或融合。当用户的请求涉及对已有图片的操作时，使用此工具。系统会自动把原图传给AI作为参考。注意：不要在回复中生成工具名称文字，请直接调用此工具。")
                         .parameters(LlmService.buildImageGenParams())
                         .build())
                 .build());
@@ -200,6 +225,14 @@ public class CommandRouter {
                         .name("remember_fact")
                         .description("记住用户的个人信息。当用户告诉你他的名字、生日、喜好、习惯等个人信息时，调用此工具保存。")
                         .parameters(LlmService.buildMemoryParams())
+                        .build())
+                .build());
+
+        tools.add(ToolFunction.builder()
+                .function(FunctionDefinition.builder()
+                        .name("switch_voice")
+                        .description("切换语音播报的音色。当用户想换声音、觉得声音不好听、想用特定音色（如女声冷静、女声元气、童声等）时，调用此工具。可用音色：默认男声、女声元气、女声欢脱、女声童声、女声冷静、女声共情、女声知性。")
+                        .parameters(LlmService.buildVoiceSwitchParams())
                         .build())
                 .build());
 

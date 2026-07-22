@@ -23,11 +23,15 @@ public enum VoiceType {
     public static VoiceType fromName(String name) {
         if (name == null || name.trim().isEmpty()) return MALE;
         String n = name.replace("女生", "女声").replace("男生", "男声");
+        System.out.println("[VoiceTypeDebug] input=" + name + ", normalized=" + n);
         for (VoiceType vt : values()) {
+            System.out.println("[VoiceTypeDebug] checking " + vt.name() + " desc=\"" + vt.description + "\" contains=" + vt.description.contains(n) + " nameEq=" + vt.name().equalsIgnoreCase(n));
             if (vt.description.contains(n) || vt.name().equalsIgnoreCase(n)) {
+                System.out.println("[VoiceTypeDebug] matched: " + vt.name());
                 return vt;
             }
         }
+        System.out.println("[VoiceTypeDebug] no match, returning MALE");
         return MALE;
     }
 }
