@@ -1,9 +1,8 @@
 package com.Myself.demo.service;
 
-import com.alibaba.dashscope.aigc.imagegeneration.ImageGeneration;
-import com.alibaba.dashscope.aigc.imagegeneration.ImageGenerationParam;
-import com.alibaba.dashscope.aigc.imagegeneration.ImageGenerationResult;
-import com.alibaba.dashscope.aigc.imagegeneration.ImageGenerationMessage;
+import com.alibaba.dashscope.aigc.imagesynthesis.ImageSynthesis;
+import com.alibaba.dashscope.aigc.imagesynthesis.ImageSynthesisParam;
+import com.alibaba.dashscope.aigc.imagesynthesis.ImageSynthesisResult;
 import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalConversation;
 import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalConversationParam;
 import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalConversationResult;
@@ -19,9 +18,7 @@ import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -73,33 +70,32 @@ public class ImageService {
 
     public byte[] generateImage(String prompt) {
         try {
-            ImageGeneration ig = new ImageGeneration();
-            ImageGenerationMessage msg = ImageGenerationMessage.builder()
-                    .role(Role.USER.getValue())
-                    .content(Collections.singletonList(
-                            Map.of("text", prompt)
-                    ))
-                    .build();
-
-            ImageGenerationParam param = ImageGenerationParam.builder()
+            ImageSynthesisParam param = ImageSynthesisParam.builder()
                     .apiKey(apiKey)
-                    .model("wan2.6-t2i")
+                    .model(ImageSynthesis.Models.WANX_V1)
+                    .prompt(prompt)
                     .n(1)
-                    .size("1024*1024")
-                    .messages(Collections.singletonList(msg))
                     .build();
 
-            ImageGenerationResult result = ig.call(param);
+            log.info("正在调用通义万相生成图片: {}", prompt);
+            ImageSynthesisResult result = new ImageSynthesis().call(param);
 
-            String imageUrl = extractImageUrl(result);
-            if (imageUrl == null || imageUrl.isEmpty()) {
-                imageUrl = waitForAsyncResult(ig, result);
-            }
-            if (imageUrl == null || imageUrl.isEmpty()) {
-                throw new RuntimeException("未能获取生成图片的URL");
+            String taskStatus = result.getOutput().getTaskStatus();
+            if (!"SUCCEEDED".equals(taskStatus)) {
+                if ("RUNNING".equals(taskStatus) || "PENDING".equals(taskStatus)) {
+                    log.info("图片生成任务进行中，等待完成...");
+                    result = new ImageSynthesis().wait(result, apiKey);
+                    taskStatus = result.getOutput().getTaskStatus();
+                }
+                if (!"SUCCEEDED".equals(taskStatus)) {
+                    throw new RuntimeException("图片生成失败，状态: " + taskStatus
+                            + ", 错误: " + result.getOutput().getMessage());
+                }
             }
 
-            log.info("文生图完成: prompt={}, url={}", prompt, imageUrl);
+            String imageUrl = result.getOutput().getResults().get(0).get("url");
+            log.info("图片生成成功，下载地址: {}", imageUrl);
+
             return downloadImage(imageUrl);
 
         } catch (Exception e) {
@@ -108,56 +104,6 @@ public class ImageService {
                 throw new RuntimeException("该内容涉及版权保护，无法生成。请尝试其他非版权相关的内容。");
             }
             throw new RuntimeException("图片生成失败: " + e.getMessage(), e);
-        }
-    }
-
-    public byte[] transformImage(List<byte[]> images, String stylePrompt) {
-        try {
-            List<Path> tempPaths = new ArrayList<>();
-            List<Map<String, Object>> content = new ArrayList<>();
-
-            for (byte[] img : images) {
-                Path tmp = FileUtil.createTempFile("transform_", ".png", img);
-                tempPaths.add(tmp);
-                content.add(Map.of("image", tmp.toAbsolutePath().toString()));
-            }
-            content.add(Map.of("text", stylePrompt));
-
-            ImageGeneration ig = new ImageGeneration();
-            ImageGenerationMessage msg = ImageGenerationMessage.builder()
-                    .role(Role.USER.getValue())
-                    .content(content)
-                    .build();
-
-            ImageGenerationParam param = ImageGenerationParam.builder()
-                    .apiKey(apiKey)
-                    .model("wan2.6-image")
-                    .n(1)
-                    .size("1024*1024")
-                    .messages(Collections.singletonList(msg))
-                    .build();
-
-            ImageGenerationResult result = ig.call(param);
-
-            FileUtil.deleteTempFiles(tempPaths);
-
-            String imageUrl = extractImageUrl(result);
-            if (imageUrl == null || imageUrl.isEmpty()) {
-                imageUrl = waitForAsyncResult(ig, result);
-            }
-            if (imageUrl == null || imageUrl.isEmpty()) {
-                throw new RuntimeException("未能获取生成图片的URL");
-            }
-
-            log.info("图生图完成: images={}, style={}", images.size(), stylePrompt);
-            return downloadImage(imageUrl);
-
-        } catch (Exception e) {
-            log.error("图生图失败", e);
-            if (e.getMessage() != null && e.getMessage().contains("IPInfringement")) {
-                throw new RuntimeException("该内容涉及版权保护，无法生成。请尝试其他非版权相关的内容。");
-            }
-            throw new RuntimeException("图片变换失败: " + e.getMessage(), e);
         }
     }
 
@@ -171,34 +117,6 @@ public class ImageService {
             }
         }
         return "无回复内容";
-    }
-
-    private String extractImageUrl(ImageGenerationResult result) {
-        if (result.getOutput() == null) return null;
-        if (result.getOutput().getChoices() != null) {
-            List<Map<String, Object>> content = result.getOutput()
-                    .getChoices().get(0)
-                    .getMessage().getContent();
-            for (Map<String, Object> item : content) {
-                if (item.containsKey("image")) {
-                    return (String) item.get("image");
-                }
-            }
-        }
-        return null;
-    }
-
-    private String waitForAsyncResult(ImageGeneration ig, ImageGenerationResult result) {
-        try {
-            String taskId = result.getOutput().getTaskId();
-            if (taskId == null) return null;
-            log.info("等待生图异步任务完成: taskId={}", taskId);
-            ImageGenerationResult finalResult = ig.wait(taskId, apiKey);
-            return extractImageUrl(finalResult);
-        } catch (Exception e) {
-            log.error("等待生图异步结果失败", e);
-            return null;
-        }
     }
 
     private byte[] downloadImage(String url) {

@@ -8,7 +8,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class VoicePreferenceService {
 
     private final ConcurrentHashMap<String, String> voicePref = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Boolean> voiceMode = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Boolean> voiceEnabled = new ConcurrentHashMap<>();
 
     public String getVoiceCode(String userId) {
         return voicePref.get(userId);
@@ -20,18 +20,18 @@ public class VoicePreferenceService {
 
     public void remove(String userId) {
         voicePref.remove(userId);
-        voiceMode.remove(userId);
-    }
-
-    public void enableVoice(String userId) {
-        voiceMode.put(userId, true);
-    }
-
-    public void disableVoice(String userId) {
-        voiceMode.remove(userId);
+        voiceEnabled.remove(userId);
     }
 
     public boolean isVoiceEnabled(String userId) {
-        return Boolean.TRUE.equals(voiceMode.get(userId));
+        return voiceEnabled.getOrDefault(userId, false);
+    }
+
+    public void enableVoice(String userId) {
+        voiceEnabled.put(userId, true);
+    }
+
+    public void disableVoice(String userId) {
+        voiceEnabled.put(userId, false);
     }
 }

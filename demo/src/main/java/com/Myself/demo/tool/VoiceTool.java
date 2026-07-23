@@ -28,7 +28,7 @@ public class VoiceTool {
         }
     }
 
-    @Tool(name = "enable_voice", value = "开启语音播报模式。当用户想听语音回复、说开启语音、打开语音时使用。")
+    @Tool(name = "enable_voice", value = "为本次回复启用语音播报。仅本次生效，下次自动关闭。当用户要求用语音回复、语音告诉我、语音总结时使用。如果用户没有明确要求语音，不要调用此工具。")
     public String enableVoice(@P("用户ID，系统自动填充") String userId) {
         voicePreferenceService.enableVoice(userId);
         return "语音播报已开启";

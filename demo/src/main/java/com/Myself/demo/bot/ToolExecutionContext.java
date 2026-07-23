@@ -32,6 +32,10 @@ public class ToolExecutionContext {
         pending.set(new PendingAction("re_examine", question, false, null, null, 0));
     }
 
+    public static void recordSaveAsFile(String content, String fileName) {
+        pending.set(new PendingAction("save_file", content, false, fileName, null, 0));
+    }
+
     public static PendingAction getAndClear() {
         PendingAction result = pending.get();
         pending.remove();

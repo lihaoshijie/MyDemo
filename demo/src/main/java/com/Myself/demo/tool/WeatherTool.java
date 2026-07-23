@@ -1,7 +1,5 @@
 package com.Myself.demo.tool;
 
-import com.Myself.demo.command.Command;
-import com.Myself.demo.exception.MissingParameterException;
 import com.Myself.demo.model.WeatherResponse;
 import com.Myself.demo.service.WeatherService;
 import dev.langchain4j.agent.tool.P;
@@ -11,32 +9,12 @@ import org.springframework.stereotype.Component;
 
 @Slf4j
 @Component
-public class WeatherTool implements Command {
+public class WeatherTool {
 
     private final WeatherService weatherService;
 
     public WeatherTool(WeatherService weatherService) {
         this.weatherService = weatherService;
-    }
-
-    @Override
-    public String getName() {
-        return "weather";
-    }
-
-    @Override
-    public String execute(String[] args) {
-        if (args.length == 0 || args[0].trim().isEmpty()) {
-            throw new MissingParameterException("缺少城市参数，用法: weather <城市名> [天数]");
-        }
-        String city = args[0].trim();
-        int days = 1;
-        if (args.length > 1) {
-            try { days = Integer.parseInt(args[1].trim()); }
-            catch (NumberFormatException e) { days = 1; }
-        }
-        log.info("CLI查询天气: {} 天数={}", city, days);
-        return doQuery(city, days);
     }
 
     @Tool(name = "weather", value = "查询全球任意城市的实时天气或未来天气预报。支持所有城市，包括国内和国际城市（如北京、纽约、东京、伦敦等）。只支持实时天气和未来几天的预报，不支持查询历史天气（昨天、前天等）。对于主观天气感受（如热不热、冷不冷）或历史天气，请直接回答，不要调用此工具。")

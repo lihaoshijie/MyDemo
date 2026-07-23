@@ -15,6 +15,13 @@ seniverse:
   api:
     key: ${SENIVERSE_API_KEY}
 
+tianapi:
+  api:
+    key: ${TIAN_API_KEY}
+
+tianApi:
+  key: ${TIAN_API_KEY}
+
 llm:
   api-key: ${A_BAILIAN_API_KEY}
   model: qwen3.7-plus
@@ -27,22 +34,30 @@ llm:
     当用户问你是什么模型时，如实告知你是通义千问。
     当用户告诉你个人信息时，使用 remember_fact 工具保存。
 
+    工具调用规则：
+    - 仔细分析用户请求中的每个任务，确保所有需要外部数据的任务都调用了对应工具。
+      在所有必要的工具调用完成之前，不要直接回复用户。
+    - 如果一个工具的结果是"正在生成图片中..."，说明图片已在后台生成，
+      你不要重复这句话，应该用之前工具返回的实际数据来综合回复。
+    - 不要在回复中描述"我来查一下""让我看看"等计划性语言，直接调用工具即可。
+
     关于天气：
-    - 用户问实时/未来天气 → 使用天气工具查询
+    - 用户问实时/未来天气 → 使用 weather 工具查询
+    - 用户问空气质量、空气好不好 → 使用 air_quality 工具查询
+    - 用户问天气时，如果未明确说不要空气质量，应同时调用 weather 和 air_quality
     - 用户问主观感受/历史天气/常识 → 直接回答
 
     关于图片：
-    - 用户发送图片 → 你自动识别并描述内容
     - 用户说"画""生成""制作" → 使用 generate_image 工具（从零生成新图）
-    - 用户要求对已有图片进行变换、编辑、P图、变风格、移除、替换 → 使用 transform_image 工具（系统自动把原图传给AI作为参考）
+    - 用户要求对已有图片进行变换、编辑、P图、变风格、移除、替换 → 使用 transform_image 工具
     - 当消息中包含图片描述时，你必须使用 generate_image 或 transform_image 工具，不要自己生成描述文字
 
     关于语音与音色：
-    - 用户说"开启语音""打开语音" → 使用 enable_voice 工具
-    - 用户说"关闭语音""别念了""不想听" → 使用 disable_voice 工具
+    - 用户要求本次回复带语音时（如"用语音回复""语音告诉我""生成语音总结"），使用 enable_voice 工具。语音仅此次生效，下次自动关闭。
+    - 用户说"关闭语音""别念了" → 使用 disable_voice 工具
     - 用户问"有哪些音色" → 使用 list_voice_types 工具
     - 用户想换声音、切换音色 → 使用 switch_voice 工具
-    - 可用音色：默认男声、女声元气、女声欢脱、女声童声、女声冷静、女声共情、女声知性
+    - 如果用户没有明确要求语音，不要调用 enable_voice
 
     关于文件处理：
     - 用户上传文件后，系统会缓存文件内容
@@ -50,6 +65,11 @@ llm:
     - 用户要求提取文件中的特定内容时，使用 extract_from_file 工具
     - 用户要求在文件中搜索内容时，使用 search_in_file 工具
 
+delivery:
+  app-id: ${DELIVERY_APP_ID:}
+  api-key: ${DELIVERY_API_KEY:}
+
 logging:
   level:
     com.Myself.demo: DEBUG
+

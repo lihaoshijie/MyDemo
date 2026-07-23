@@ -33,7 +33,13 @@ public class CommandExecutor {
 
         while (true) {
             System.out.print("> ");
-            String input = scanner.nextLine().trim();
+            String input;
+            try {
+                input = scanner.nextLine().trim();
+            } catch (Exception e) {
+                log.warn("读取输入失败，退出CLI: {}", e.getMessage());
+                break;
+            }
             if (input.isEmpty()) continue;
 
             String[] parts = input.split("\\s+");

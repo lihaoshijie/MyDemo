@@ -63,8 +63,7 @@ public class WeChatBotService {
     private final ConcurrentHashMap<String, String> lastFileResult = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, String> lastFileContent = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, String> lastFileName = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Long> voiceModeTime = new ConcurrentHashMap<>();
-    private static final long VOICE_MODE_TTL = 5 * 60 * 1000;
+    private final ConcurrentHashMap<Long, Boolean> processedMessages = new ConcurrentHashMap<>();
 
     private static class ImageEntry {
         byte[] bytes;
@@ -191,7 +190,14 @@ public class WeChatBotService {
 
     private void handleMessages(List<WeixinMessage> messages) {
         for (WeixinMessage msg : messages) {
+            if (processedMessages.putIfAbsent(msg.getMessage_id(), Boolean.TRUE) != null) {
+                log.debug("重复消息跳过: msgId={}", msg.getMessage_id());
+                continue;
+            }
             handleMessage(msg);
+        }
+        if (processedMessages.size() > 1000) {
+            processedMessages.clear();
         }
     }
 
@@ -351,10 +357,14 @@ public class WeChatBotService {
             if (action != null) {
                 switch (action.type()) {
                     case "image_gen":
-                        doImageGen(fromUserId, action.prompt());
-                        return;
                     case "image_transform":
-                        doImageTransform(fromUserId, action.prompt(), images);
+                        client.sendText(fromUserId, result);
+                        log.info("回复消息成功: {}", result.substring(0, Math.min(50, result.length())));
+                        if ("image_gen".equals(action.type())) {
+                            doImageGen(fromUserId, action.prompt());
+                        } else {
+                            doImageTransform(fromUserId, action.prompt(), images);
+                        }
                         return;
                     case "file_translate":
                     case "file_extract":
@@ -362,10 +372,14 @@ public class WeChatBotService {
                         doFileToolAction(fromUserId, action);
                         return;
                     case "file_export":
+                        client.sendText(fromUserId, result);
                         doFileExport(fromUserId);
                         return;
                     case "re_examine":
                         doReExamine(fromUserId, action.prompt(), images);
+                        return;
+                    case "save_file":
+                        doSaveAsFile(fromUserId, result, action.arg1());
                         return;
                 }
             }
@@ -383,6 +397,8 @@ public class WeChatBotService {
                     }
                 } catch (Exception e) {
                     log.warn("语音发送失败", e);
+                } finally {
+                    voicePreferenceService.disableVoice(fromUserId);
                 }
             }
         } catch (Exception e) {
@@ -413,16 +429,7 @@ public class WeChatBotService {
         log.info("图生图: {}", prompt);
         try {
             client.sendText(fromUserId, "正在生成中，请稍候...");
-            byte[] imageBytes;
-            if (images != null && !images.isEmpty()) {
-                List<byte[]> imgBytes = new ArrayList<>();
-                for (ImageEntry e : images) {
-                    imgBytes.add(e.bytes);
-                }
-                imageBytes = imageService.transformImage(imgBytes, prompt);
-            } else {
-                imageBytes = imageService.generateImage(prompt);
-            }
+            byte[] imageBytes = imageService.generateImage(prompt);
             client.sendImage(fromUserId, imageBytes, "image.png", "");
             log.info("图片发送成功");
         } catch (Exception e) {
@@ -440,6 +447,17 @@ public class WeChatBotService {
             log.info("文件总结已发送: {}", fromUserId);
         } catch (Exception e) {
             log.error("文件总结发送失败", e);
+        }
+    }
+
+    private void doSaveAsFile(String fromUserId, String content, String fileName) {
+        if (content == null || content.isEmpty()) return;
+        String name = (fileName != null && !fileName.isEmpty()) ? fileName + ".txt" : "export.txt";
+        try {
+            client.sendFile(fromUserId, content.getBytes("UTF-8"), name, "");
+            log.info("文本文件已发送: {}", name);
+        } catch (Exception e) {
+            log.error("文本文件发送失败", e);
         }
     }
 

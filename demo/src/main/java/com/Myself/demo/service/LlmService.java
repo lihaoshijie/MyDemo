@@ -12,6 +12,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -55,20 +56,7 @@ public class LlmService {
             body.addProperty("model", model);
             body.addProperty("max_tokens", 2048);
 
-            JsonArray messages = new JsonArray();
-            JsonObject sysMsg = new JsonObject();
-            sysMsg.addProperty("role", "system");
-            sysMsg.addProperty("content", buildSystemPrompt(userId));
-            messages.add(sysMsg);
-
-            if (history != null) {
-                for (Map<String, String> msg : history) {
-                    JsonObject m = new JsonObject();
-                    m.addProperty("role", msg.get("role"));
-                    m.addProperty("content", msg.get("content"));
-                    messages.add(m);
-                }
-            }
+            JsonArray messages = buildBaseMessages(userId, history);
             body.add("messages", messages);
 
             JsonObject result = callApi(body);
@@ -87,57 +75,15 @@ public class LlmService {
             userMsg.addProperty("content", userMessage);
             messages.add(userMsg);
 
-            JsonObject body = new JsonObject();
-            body.addProperty("model", model);
-            body.addProperty("max_tokens", 4096);
-            body.add("messages", messages);
-            addTools(body, tools);
-
-            JsonObject result = callApi(body);
-            return parseResult(result);
+            return chatRaw(messages, tools);
         } catch (Exception e) {
             log.error("LLM 调用异常", e);
             return LlmResult.text("AI 服务暂时不可用，请稍后再试");
         }
     }
 
-    public LlmResult continueWithToolResult(
-            String userMessage,
-            List<Map<String, String>> history,
-            String fnName,
-            String fnArgs,
-            String toolResult,
-            List<? extends com.alibaba.dashscope.tools.ToolBase> tools,
-            String userId) {
+    public LlmResult chatRaw(JsonArray messages, List<? extends com.alibaba.dashscope.tools.ToolBase> tools) {
         try {
-            JsonArray messages = buildBaseMessages(userId, history);
-            JsonObject userMsg = new JsonObject();
-            userMsg.addProperty("role", "user");
-            userMsg.addProperty("content", userMessage);
-            messages.add(userMsg);
-
-            JsonObject assistantMsg = new JsonObject();
-            assistantMsg.addProperty("role", "assistant");
-            assistantMsg.add("content", null);
-            JsonArray toolCalls = new JsonArray();
-            JsonObject toolCall = new JsonObject();
-            toolCall.addProperty("id", "call_" + fnName);
-            toolCall.addProperty("type", "function");
-            JsonObject function = new JsonObject();
-            function.addProperty("name", fnName);
-            function.addProperty("arguments", fnArgs);
-            toolCall.add("function", function);
-            toolCalls.add(toolCall);
-            assistantMsg.add("tool_calls", toolCalls);
-            messages.add(assistantMsg);
-
-            JsonObject toolMsg = new JsonObject();
-            toolMsg.addProperty("role", "tool");
-            toolMsg.addProperty("content", toolResult);
-            toolMsg.addProperty("tool_call_id", "call_" + fnName);
-            toolMsg.addProperty("name", fnName);
-            messages.add(toolMsg);
-
             JsonObject body = new JsonObject();
             body.addProperty("model", model);
             body.addProperty("max_tokens", 4096);
@@ -147,12 +93,12 @@ public class LlmService {
             JsonObject result = callApi(body);
             return parseResult(result);
         } catch (Exception e) {
-            log.error("LLM ReAct 调用异常", e);
+            log.error("LLM chatRaw 异常", e);
             return LlmResult.text("AI 服务暂时不可用，请稍后再试");
         }
     }
 
-    private JsonArray buildBaseMessages(String userId, List<Map<String, String>> history) {
+    public JsonArray buildBaseMessages(String userId, List<Map<String, String>> history) {
         JsonArray messages = new JsonArray();
         JsonObject sysMsg = new JsonObject();
         sysMsg.addProperty("role", "system");
@@ -168,6 +114,35 @@ public class LlmService {
             }
         }
         return messages;
+    }
+
+    public JsonObject buildAssistantWithToolCalls(List<LlmResult.FunctionCall> calls) {
+        JsonObject msg = new JsonObject();
+        msg.addProperty("role", "assistant");
+        msg.add("content", null);
+        JsonArray toolCalls = new JsonArray();
+        for (int i = 0; i < calls.size(); i++) {
+            LlmResult.FunctionCall call = calls.get(i);
+            JsonObject tc = new JsonObject();
+            tc.addProperty("id", "call_" + i + "_" + call.name());
+            tc.addProperty("type", "function");
+            JsonObject fn = new JsonObject();
+            fn.addProperty("name", call.name());
+            fn.addProperty("arguments", call.args());
+            tc.add("function", fn);
+            toolCalls.add(tc);
+        }
+        msg.add("tool_calls", toolCalls);
+        return msg;
+    }
+
+    public JsonObject buildToolResult(int index, LlmResult.FunctionCall call, String result) {
+        JsonObject msg = new JsonObject();
+        msg.addProperty("role", "tool");
+        msg.addProperty("content", result);
+        msg.addProperty("tool_call_id", "call_" + index + "_" + call.name());
+        msg.addProperty("name", call.name());
+        return msg;
     }
 
     private void addTools(JsonObject body, List<? extends com.alibaba.dashscope.tools.ToolBase> tools) {
@@ -230,11 +205,16 @@ public class LlmService {
         if (msg.has("tool_calls") && !msg.get("tool_calls").isJsonNull()) {
             JsonArray toolCalls = msg.getAsJsonArray("tool_calls");
             if (toolCalls != null && !toolCalls.isEmpty()) {
-                JsonObject toolCall = toolCalls.get(0).getAsJsonObject();
-                String fnName = toolCall.getAsJsonObject("function").get("name").getAsString();
-                String fnArgs = toolCall.getAsJsonObject("function").get("arguments").getAsString();
-                log.info("Function calling: {}({})", fnName, fnArgs);
-                return LlmResult.functionCall(fnName, fnArgs);
+                List<LlmResult.FunctionCall> calls = new ArrayList<>();
+                for (int i = 0; i < toolCalls.size(); i++) {
+                    JsonObject tc = toolCalls.get(i).getAsJsonObject();
+                    JsonObject fn = tc.getAsJsonObject("function");
+                    String name = fn.get("name").getAsString();
+                    String args = fn.get("arguments").getAsString();
+                    calls.add(new LlmResult.FunctionCall(name, args));
+                }
+                log.info("Function calling: {} tool(s)", calls.size());
+                return LlmResult.functionCall(calls);
             }
         }
 
@@ -245,28 +225,30 @@ public class LlmService {
     public static class LlmResult {
         private final String type;
         private final String content;
-        private final String functionName;
-        private final String functionArgs;
+        private final List<FunctionCall> functionCalls;
 
-        private LlmResult(String type, String content, String functionName, String functionArgs) {
+        private LlmResult(String type, String content, List<FunctionCall> functionCalls) {
             this.type = type;
             this.content = content;
-            this.functionName = functionName;
-            this.functionArgs = functionArgs;
+            this.functionCalls = functionCalls;
         }
 
         public static LlmResult text(String content) {
-            return new LlmResult("text", content, null, null);
+            return new LlmResult("text", content, List.of());
         }
 
-        public static LlmResult functionCall(String name, String args) {
-            return new LlmResult("function_call", null, name, args);
+        public static LlmResult functionCall(List<FunctionCall> calls) {
+            return new LlmResult("function_call", null, calls);
         }
 
         public boolean isText() { return "text".equals(type); }
         public boolean isFunctionCall() { return "function_call".equals(type); }
         public String getContent() { return content; }
-        public String getFunctionName() { return functionName; }
-        public String getFunctionArgs() { return functionArgs; }
+        public List<FunctionCall> getFunctionCalls() { return functionCalls; }
+
+        public String getFunctionName() { return functionCalls.isEmpty() ? null : functionCalls.get(0).name(); }
+        public String getFunctionArgs() { return functionCalls.isEmpty() ? null : functionCalls.get(0).args(); }
+
+        public record FunctionCall(String name, String args) {}
     }
 }

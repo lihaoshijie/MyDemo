@@ -37,4 +37,11 @@ public class FileTool {
         ToolExecutionContext.recordFileExport();
         return "正在生成文件总结...";
     }
+
+    @Tool(name = "save_as_file", value = "将你（AI）的回答内容保存为文件并发送。你应当先把完整内容写在文字回复中，然后调用此工具，系统会自动将你的文字回复存为文件。调用此工具只需要告诉文件名，不需要把内容当参数传。")
+    public String saveAsFile(
+            @P("文件名（不含后缀），如：冷笑话合集、会议纪要") String fileName) {
+        ToolExecutionContext.recordSaveAsFile(null, fileName);
+        return "";
+    }
 }

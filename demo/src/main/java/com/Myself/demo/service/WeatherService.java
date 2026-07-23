@@ -174,6 +174,20 @@ public class WeatherService {
         }
     }
 
+    private void resolveLocationPath(String path, WeatherResponse weather) {
+        String[] parts = path.split(",");
+        if (parts.length >= 1) weather.setCountry(parts[0].trim());
+        if (parts.length >= 3) {
+            weather.setProvince(parts[1].trim());
+            weather.setCity(parts[2].trim());
+            if (parts.length >= 4) {
+                weather.setDistrict(parts[3].trim());
+            }
+        } else if (parts.length == 2) {
+            weather.setProvince(parts[1].trim());
+        }
+    }
+
     private WeatherResponse parseNowResponse(String response, String location) {
         try {
             JsonNode root = objectMapper.readTree(response);
@@ -188,10 +202,7 @@ public class WeatherService {
             WeatherResponse weather = new WeatherResponse();
             JsonNode locationNode = weatherNode.path("location");
             weather.setCity(locationNode.path("name").asText());
-            String path = locationNode.path("path").asText();
-            String[] pathParts = path.split(",");
-            weather.setProvince(pathParts.length >= 3 ? pathParts[pathParts.length - 2].trim() : "");
-            weather.setCountry(pathParts[pathParts.length - 1].trim());
+            resolveLocationPath(locationNode.path("path").asText(), weather);
             weather.setWeather(nowNode.path("text").asText());
             weather.setTemperature(nowNode.path("temperature").asText() + "°C");
             weather.setFeelsLike(nowNode.path("feels_like").asText() + "°C");
@@ -234,10 +245,7 @@ public class WeatherService {
             WeatherResponse w = new WeatherResponse();
             JsonNode locationNode = weatherNode.path("location");
             w.setCity(locationNode.path("name").asText());
-            String path = locationNode.path("path").asText();
-            String[] pathParts = path.split(",");
-            w.setProvince(pathParts.length >= 3 ? pathParts[pathParts.length - 2].trim() : "");
-            w.setCountry(pathParts[pathParts.length - 1].trim());
+            resolveLocationPath(locationNode.path("path").asText(), w);
             w.setWeather(dayNode.path("text_day").asText());
             w.setHigh(dayNode.path("high").asText() + "°C");
             w.setLow(dayNode.path("low").asText() + "°C");

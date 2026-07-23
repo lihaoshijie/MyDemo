@@ -8,18 +8,24 @@ import com.Myself.demo.service.LlmService.LlmResult;
 import com.alibaba.dashscope.tools.ToolFunction;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.gson.JsonArray;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Slf4j
 @Component
 public class CommandRouter {
+
+    private static final int MAX_TOOL_ROUNDS = 5;
 
     private final Map<String, Command> commands;
     private final ChatService chatService;
@@ -59,33 +65,54 @@ public class CommandRouter {
         log.info("未匹配直接命令，LLM function calling: {}", trimmed);
         List<Map<String, String>> history = chatService.getHistory(userId);
         List<ToolFunction> tools = toolRegistry.buildTools();
-        LlmResult result = llmService.chat(trimmed, tools, history, userId);
 
-        if (result.isFunctionCall()) {
-            String fnName = result.getFunctionName();
-            String fnArgs = result.getFunctionArgs();
-            String toolResult;
+        JsonArray messages = llmService.buildBaseMessages(userId, history);
+        com.google.gson.JsonObject userMsg = new com.google.gson.JsonObject();
+        userMsg.addProperty("role", "user");
+        userMsg.addProperty("content", trimmed);
+        messages.add(userMsg);
 
-            toolResult = toolRegistry.execute(fnName, fnArgs, userId);
-            if (toolResult == null) {
-                Command fnCmd = commands.get(fnName);
-                if (fnCmd != null) {
-                    String[] cmdArgs = extractArgs(fnArgs);
-                    toolResult = executeCommand(fnCmd, fnName, cmdArgs);
+        LlmResult result = llmService.chatRaw(messages, tools);
+        Set<String> calledKeys = new HashSet<>();
+        int round = 0;
+
+        while (result.isFunctionCall()) {
+            List<LlmResult.FunctionCall> calls = result.getFunctionCalls();
+            log.info("第{}轮工具调用: {}个", round + 1, calls.size());
+
+            List<String> toolResults = new ArrayList<>();
+            List<LlmResult.FunctionCall> executedCalls = new ArrayList<>();
+
+            for (LlmResult.FunctionCall call : calls) {
+                String key = call.name() + "|" + call.args();
+                if (!calledKeys.add(key)) {
+                    log.warn("重复调用拦截: {}", key);
+                    toolResults.add("[已拦截：该工具和参数已被调用过]");
+                    executedCalls.add(call);
+                    continue;
                 }
+
+                String toolResult = executeCall(call, userId);
+                toolResults.add(toolResult != null ? toolResult : "工具执行失败");
+                executedCalls.add(call);
             }
 
-            if (toolResult != null) {
-                log.info("工具执行: {} → {}", fnName, toolResult.substring(0, Math.min(50, toolResult.length())));
-                LlmResult reactResult = llmService.continueWithToolResult(
-                        trimmed, history, fnName, fnArgs, toolResult, tools, userId);
-                if (reactResult.isText()) {
-                    String reply = reactResult.getContent();
-                    chatService.addHistory(userId, trimmed, reply);
-                    return reply;
-                }
-                return toolResult;
+            if (toolResults.isEmpty()) break;
+
+            messages.add(llmService.buildAssistantWithToolCalls(executedCalls));
+            for (int i = 0; i < executedCalls.size(); i++) {
+                messages.add(llmService.buildToolResult(i, executedCalls.get(i), toolResults.get(i)));
             }
+
+            round++;
+            if (round >= MAX_TOOL_ROUNDS) {
+                log.warn("达到最大轮次上限({})", MAX_TOOL_ROUNDS);
+                // 最后一次 LLM 调用不带工具，让它基于已有信息作答
+                result = llmService.chatRaw(messages, null);
+                break;
+            }
+
+            result = llmService.chatRaw(messages, tools);
         }
 
         if (result.isText()) {
@@ -95,6 +122,24 @@ public class CommandRouter {
         }
 
         return "无法处理此消息";
+    }
+
+    private String executeCall(LlmResult.FunctionCall call, String userId) {
+        String fnName = call.name();
+        String fnArgs = call.args();
+
+        Command fnCmd = commands.get(fnName);
+        if (fnCmd != null) {
+            try {
+                String[] cmdArgs = extractArgs(fnArgs);
+                return executeCommand(fnCmd, fnName, cmdArgs);
+            } catch (Exception e) {
+                log.warn("命令执行失败: {}", fnName, e);
+                return "命令执行失败: " + e.getMessage();
+            }
+        }
+
+        return toolRegistry.execute(fnName, fnArgs, userId);
     }
 
     private String[] extractArgs(String fnArgs) {
